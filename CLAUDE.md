@@ -273,6 +273,35 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.76 — **AN ACTIVE LOCK CAN BE RE-LOCKED, NOT ONLY RELEASED** (field report: "בפעם
+  הראשונה שואל לכמה זמן, בפעם השנייה שאני רוצה לנעול — החלונית לא מופיעה").
+  - **ROOT CAUSE: WITH ANY LOCK ACTIVE, EVERY PADLOCK TAP WAS RELEASE-ONLY** — the active
+    branch of both `onLockTap` and `onSiteLockTap` did the code, cleared the lock, and
+    RETURNED. So the "how long?" dialog appeared on the FIRST lock and never again: a parent
+    who had locked a SITE and then wanted to lock the APP tapped the app padlock, met the
+    code, and the lock simply released — there was no path to set a second lock, or to change
+    a duration, without releasing first. Reproduced in the browser exactly (the PIN title
+    read "קוד הורים לשחרור הנעילה" and the lock dropped to 🔓 with no dialog).
+  - **THE FIX IS A CHOICE AFTER THE CODE** (pure `plan.relockChoice`, the user's decision
+    2026-09-06): 'ok' = release (the primary button — the common intent when a 🔒 shows),
+    'third' = re-lock with a FRESH duration, anything else = leave it be. Re-lock uses the
+    scope of the padlock the parent tapped (so a site-locked parent tapping the app padlock
+    gets an APP lock) and NEVER asks for the code twice — they just entered it. The mapping
+    is pinned so a swapped pair cannot hand a child a release where the parent meant re-lock.
+  - **THE FRESH-LOCK PATH IS UNCHANGED**: with no lock active the padlock still asks the code
+    THEN the duration, straight through, no choice. `engageLock` (the shared duration-dialog
+    opener) sits INSIDE `onSuccess`, never before the PIN — a guard pins that, because moving
+    it out would drop the code gate on the first lock.
+  - `computeLockTarget` is the ONE place that resolves a tapped padlock to {mode, fid,
+    siteUrl} (or refuses an undescribable site / a folder with no folder), so the engage and
+    re-lock paths can never compute the target differently.
+  - This is also the mechanism feature 4 ("צלילה פנימה" — lock a deeper page) needs: a
+    re-lock while a site lock is active is exactly how a parent narrows to a sub-page.
+  - 1 unit test (`relockChoice`) + 1 invariants guard (both padlocks), every guard proven red
+    on a planted regression (6). Browser-verified end to end through the real PIN gate: a
+    second lock now opens the duration dialog pre-filled with the remembered value, re-lock
+    engaged a new 45-min timer, release still cleared the lock, and a fresh lock still asked.
+
 - v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
   שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
   - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY
