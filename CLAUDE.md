@@ -353,6 +353,30 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     the kiosk refusing PiP mid-play. **Real PiP — the window, its buttons, the event order,
     YouTube's behaviour inside it — is a DEVICE checklist item.**
 
+- v1.0.76 — **THE APPROVED-SITES VIEWER GAINS BROWSER BACK/FORWARD** (user request: "כפתורים
+  ימינה ושמאלה … כמו שיש בדפדפן אינטרנט"). Two buttons at the RTL-LEFT of the viewer bar
+  (opposite the 🏠 pill), driving the WebView's OWN history (`goBack`/`goForward`).
+  - **THE GLYPHS ARE THE APP'S OWN PAGER LANGUAGE** (`ui/pager.js`): ▶ = "previous" (back),
+    ◀ = "next" (forward), mirrored for RTL — so a child meets ONE arrow convention across
+    the whole app, and it matches Android's own RTL browser.
+  - **GREYED WHEN DEAD** (`updateNavButtons`, `canGoBack`/`canGoForward` → `setEnabled` +
+    35% alpha): a child must not tap an arrow that does nothing. Refreshed from open() and
+    from EVERY history hook — `onPageStarted`, `onPageFinished` (where `canGoForward` flips
+    to false once a new nav commits) and `doUpdateVisitedHistory` (a same-document pushState
+    that `onPageStarted` misses).
+  - ⚠️ **NOT A HOLE IN THE SAFETY BOUNDARY.** `goBack`/`goForward` reach only history
+    entries that `shouldOverrideUrlLoading` ALREADY vetted when they first loaded, and a
+    site lock rebuilds the overlay (mode change → forceClose → fresh WebView, empty history),
+    so an in-lock history holds only in-lock pages. History navigation does not re-run the
+    URL filter and does not need to. `weblock.js` is untouched — this is pure chrome.
+  - Fields, not locals (the history hooks reach them), nulled in `forceClose` beside
+    `titleView`. Both java copies; the ⚠️ guard's per-hook check is BRACE-BALANCED
+    (`javaMethodBody`) after a fixed char window bled into the next hook and passed with a
+    deleted call — the handlerBody trap, a third time.
+  - **DEVICE-ONLY**: the viewer is a native overlay that does not exist in a browser, so the
+    whole feature is a device-checklist item. 1 invariants guard (both copies), proven red
+    on four planted regressions; APK compiles.
+
 - v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
   שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
   - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY

@@ -2493,6 +2493,21 @@ const JAVA_PAIRS = [
   'android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java',
   'native-reference/KidsWebPlugin.java'
 ];
+
+/** v1.0.76 — a Java method's body, brace-balanced from the first `{` at/after `at`. The
+ *  Java twin of handlerBody: a fixed char window bleeds into the next method and passes on
+ *  a deleted call (proven — the onPageFinished plant). */
+function javaMethodBody(src, at) {
+  let i = src.indexOf('{', at);
+  if (i < 0) return '';
+  const start = i;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (!depth) return src.slice(start, i + 1); }
+  }
+  return src.slice(start);
+}
 const readRepo = (p) => readFileSync(join(ROOT, p), 'utf8');
 /** Java source with comments stripped. Every positional/absence guard below MUST use
  *  this: the comments deliberately NAME what they forbid ("verifying a PIN in Java
@@ -2832,6 +2847,41 @@ test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.
     // and closing the viewer must not leak a detached surface
     assert.match(body.slice(body.indexOf('private void closeOverlay')), /exitFullscreen\(\)/,
       `${p}: closing while fullscreen leaves the video surface attached`);
+  }
+});
+
+test('the site viewer has browser back/forward, greyed when dead, in BOTH java copies (v1.0.76)', () => {
+  // Node cannot tap a native button; this pins the wiring a behavioural test cannot reach,
+  // comment-stripped (the v1.0.45 lesson — the comments NAME what they describe).
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    // the two buttons exist and drive the WebView's real history — no second implementation
+    assert.match(body, /navBack\s*=\s*navButton\(/, `${p}: no browser BACK button`);
+    assert.match(body, /navFwd\s*=\s*navButton\(/, `${p}: no browser FORWARD button`);
+    assert.match(body, /web\.goForward\(\)/, `${p}: forward button does not walk history`);
+    // the enabled state is refreshed — a dead arrow a child taps reads as a broken app.
+    // updateNavButtons must key on canGoBack/canGoForward…
+    const upd = body.slice(body.indexOf('private void updateNavButtons()'),
+                           body.indexOf('private void updateNavButtons()') + 500);
+    assert.match(upd, /canGoBack\(\)/, `${p}: the back button is never disabled`);
+    assert.match(upd, /canGoForward\(\)/, `${p}: the forward button is never disabled`);
+    // …and it must be called from EVERY history hook AND open, or a pushState / a fresh page
+    // leaves a stale arrow (onPageStarted misses same-document navs; onPageFinished is where
+    // canGoForward flips false once a new nav commits).
+    for (const hook of ['onPageStarted', 'onPageFinished', 'doUpdateVisitedHistory']) {
+      const at = body.indexOf('public void ' + hook + '(');
+      assert.ok(at > 0, `${p}: ${hook} is gone — re-anchor this guard`);
+      // ⚠️ BRACE-BALANCED, not a char window: a fixed window from onPageFinished( bled into
+      // the NEXT hook (which also calls updateNavButtons) and stayed green with this hook's
+      // call deleted — the handlerBody trap, a third time.
+      assert.match(javaMethodBody(body, at), /updateNavButtons\(\)/,
+        `${p}: ${hook} does not refresh the nav buttons — a stale/dead arrow`);
+    }
+    // the fields are cleared on teardown (the overlay is rebuilt on the next open), like
+    // titleView — a stale reference would mis-drive the next session's bar
+    const fc = body.slice(body.indexOf('private void forceClose()'), body.indexOf('private void forceClose()') + 700);
+    assert.match(fc, /navBack = null/, `${p}: navBack leaks past teardown`);
+    assert.match(fc, /navFwd = null/, `${p}: navFwd leaks past teardown`);
   }
 });
 
