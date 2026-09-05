@@ -2826,6 +2826,38 @@ test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.
   }
 });
 
+test('the site viewer has browser back/forward, greyed when dead, in BOTH java copies (v1.0.76)', () => {
+  // Node cannot tap a native button; this pins the wiring a behavioural test cannot reach,
+  // comment-stripped (the v1.0.45 lesson — the comments NAME what they describe).
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    // the two buttons exist and drive the WebView's real history — no second implementation
+    assert.match(body, /navBack\s*=\s*navButton\(/, `${p}: no browser BACK button`);
+    assert.match(body, /navFwd\s*=\s*navButton\(/, `${p}: no browser FORWARD button`);
+    assert.match(body, /web\.goForward\(\)/, `${p}: forward button does not walk history`);
+    // the enabled state is refreshed — a dead arrow a child taps reads as a broken app.
+    // updateNavButtons must key on canGoBack/canGoForward…
+    const upd = body.slice(body.indexOf('private void updateNavButtons()'),
+                           body.indexOf('private void updateNavButtons()') + 500);
+    assert.match(upd, /canGoBack\(\)/, `${p}: the back button is never disabled`);
+    assert.match(upd, /canGoForward\(\)/, `${p}: the forward button is never disabled`);
+    // …and it must be called from EVERY history hook AND open, or a pushState / a fresh page
+    // leaves a stale arrow (onPageStarted misses same-document navs; onPageFinished is where
+    // canGoForward flips false once a new nav commits).
+    for (const hook of ['onPageStarted', 'onPageFinished', 'doUpdateVisitedHistory']) {
+      const at = body.indexOf('public void ' + hook + '(');
+      assert.ok(at > 0, `${p}: ${hook} is gone — re-anchor this guard`);
+      assert.match(body.slice(at, at + 260), /updateNavButtons\(\)/,
+        `${p}: ${hook} does not refresh the nav buttons — a stale/dead arrow`);
+    }
+    // the fields are cleared on teardown (the overlay is rebuilt on the next open), like
+    // titleView — a stale reference would mis-drive the next session's bar
+    const fc = body.slice(body.indexOf('private void forceClose()'), body.indexOf('private void forceClose()') + 700);
+    assert.match(fc, /navBack = null/, `${p}: navBack leaks past teardown`);
+    assert.match(fc, /navFwd = null/, `${p}: navFwd leaks past teardown`);
+  }
+});
+
 test('the add flow ASKS about external content, and the answer reaches the rule (v1.0.48)', () => {
   // Asked at add time, not left to a toggle further down the panel: it is a per-site
   // decision the parent is already thinking about, and a site whose embedded videos will
