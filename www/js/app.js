@@ -42,7 +42,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   channelSyncModeDialog, channelSyncModeOutcome,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
-  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
+  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText, relockChoice,
   folderAncestry, folderSubtreeIds, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
@@ -577,45 +577,86 @@ async function refreshContainUi() {
   if (sitesBack) sitesBack.classList.toggle('hidden', inSitesLock);
 }
 
-/** The padlock tap: engage (code → how long?) or release (code). */
+/**
+ * Resolve the tapped padlock's target: { mode, fid, siteUrl } — or null when it cannot be
+ * locked (a folder padlock with no folder), or { error:'site' } when a site padlock has no
+ * describable page. Reads the module globals the caller stands on (folderId, the site
+ * candidate), so it is not pure, but keeping it in ONE place means the engage and re-lock
+ * paths can never compute the target differently.
+ */
+function computeLockTarget(scope) {
+  const mode = ['folder', 'sites', 'site'].includes(scope) ? scope : 'app';
+  const fid = mode === 'folder' ? folderId : null;
+  if (mode === 'folder' && !fid) return null;
+  // v1.0.67 — a SITE lock needs the page the child is on, and it must be describable as
+  // rules: `rulesForLockedSite` answering [] would open a browser that blocks its own page,
+  // so refusing to engage is the only safe direction.
+  if (mode === 'site') {
+    const siteUrl = lockCandidateSiteUrl;
+    if (!siteUrl || !rulesForLockedSite(siteRulePayload(), siteUrl).length) return { error: 'site' };
+    return { mode, fid: null, siteUrl };
+  }
+  return { mode, fid, siteUrl: null };
+}
+
+/** Open the "how long?" dialog for the tapped scope, or refuse with a toast. */
+function engageLock(scope) {
+  const t = computeLockTarget(scope);
+  if (!t) return;
+  if (t.error) { toast('אי אפשר לנעול על הדף הזה'); return; }
+  askLockDuration(t.mode, t.fid, t.siteUrl).catch(() => {});
+}
+
+/**
+ * The padlock tap.
+ *
+ * v1.0.76 — when a lock is ALREADY active, the code is followed by a CHOICE (pure
+ * `relockChoice`): release it, or re-lock with a fresh duration. Before this the active
+ * branch was release-only, so the "how long?" dialog appeared on the FIRST lock and never
+ * again — a parent who had locked a site and wanted to lock the app (or just change the
+ * timer) had no way to reach it (the reported bug). Re-lock uses the scope of the padlock
+ * the parent tapped, and never asks for the code a second time — they just entered it.
+ */
 async function onLockTap(scope) {
   if (!activeProfileId) return;
   if (containState.active) {
     startPin((await hasPin()) ? 'verify' : 'setup', {
-      title: 'קוד הורים לשחרור הנעילה',
+      title: 'קוד הורים',
       onSuccess: async () => {
-        await clearContainment();
-        // LEAVE THE CODE SCREEN. startPin's default onSuccess (enterParent) navigates by
-        // itself, so a handler that only does work strands the parent on the keypad —
-        // measured in the browser: the lock released and the screen never moved.
+        // LEAVE THE CODE SCREEN first (startPin's default onSuccess navigates by itself, so a
+        // handler that only does work strands the parent on the keypad — v1.0.56), so the
+        // choice modal renders over the child view, not the pad.
         if (nav.isActive('pin')) nav.back();
-        await refreshContainUi();
-        toast('הנעילה שוחררה 🔓');
-        renderHome();
+        const choice = relockChoice(await askKid({
+          emoji: '🔒', title: 'כבר יש נעילה',
+          text: 'לשחרר את הנעילה, או לנעול מחדש עם זמן חדש?',
+          ok: 'שחרור הנעילה', third: 'נעילה מחדש', cancel: 'ביטול'
+        }));
+        if (choice === 'release') {
+          await clearContainment();
+          await refreshContainUi();
+          toast('הנעילה שוחררה 🔓');
+          renderHome();
+        } else if (choice === 'relock') {
+          engageLock(scope); // asks the duration again — the whole point of the fix
+        }
+        // 'none' (cancel / scrim): leave the lock exactly as it was
       }
     });
     return;
-  }
-  const mode = ['folder', 'sites', 'site'].includes(scope) ? scope : 'app';
-  const fid = mode === 'folder' ? folderId : null;
-  if (mode === 'folder' && !fid) return;
-  // v1.0.67 — a SITE lock needs the page the child is on, and it must be describable as
-  // rules: `rulesForLockedSite` answering [] would open a browser that blocks its own page,
-  // so refusing to engage is the only safe direction.
-  let siteUrl = null;
-  if (mode === 'site') {
-    siteUrl = lockCandidateSiteUrl;
-    if (!siteUrl || !rulesForLockedSite(siteRulePayload(), siteUrl).length) {
-      toast('אי אפשר לנעול על הדף הזה'); return;
-    }
   }
   const titles = {
     folder: 'קוד הורים לנעילה על התיקיה', sites: 'קוד הורים לנעילה על אתרי האינטרנט',
     site: 'קוד הורים לנעילה על האתר', app: 'קוד הורים לנעילת האפליקציה'
   };
+  const mode = ['folder', 'sites', 'site'].includes(scope) ? scope : 'app';
+  // refuse early (folder with no fid / undescribable site) BEFORE the code, exactly as before
+  const t = computeLockTarget(scope);
+  if (!t) return;
+  if (t.error) { toast('אי אפשר לנעול על הדף הזה'); return; }
   startPin((await hasPin()) ? 'verify' : 'setup', {
     title: titles[mode],
-    onSuccess: () => { askLockDuration(mode, fid, siteUrl).catch(() => {}); }
+    onSuccess: () => { engageLock(scope); }
   });
 }
 
@@ -2225,15 +2266,29 @@ async function onSiteLockTap() {
   let settled = false;   // onDone fires exactly once, for success AND for cancel
   if (wasLocked) {
     startPin((await hasPin()) ? 'verify' : 'setup', {
-      title: 'קוד הורים לשחרור הנעילה',
+      title: 'קוד הורים',
       onSuccess: async () => {
         settled = true;
-        await clearContainment();
         if (nav.isActive('pin')) nav.back();
-        nav.reset('sites');
-        renderSitesView();
-        await refreshContainUi();
-        toast('הנעילה שוחררה 🔓');
+        // v1.0.76 — release OR re-lock with a fresh duration (the same fix as onLockTap: the
+        // release-only branch meant the "how long?" dialog could never appear a second time).
+        const choice = relockChoice(await askKid({
+          emoji: '🔒', title: 'כבר יש נעילה',
+          text: 'לשחרר את הנעילה, או לנעול מחדש עם זמן חדש?',
+          ok: 'שחרור הנעילה', third: 'נעילה מחדש', cancel: 'ביטול'
+        }));
+        if (choice === 'release') {
+          await clearContainment();
+          nav.reset('sites');
+          renderSitesView();
+          await refreshContainUi();
+          toast('הנעילה שוחררה 🔓');
+        } else if (choice === 'relock' && url) {
+          askLockDuration('site', null, url).catch(() => {});
+        } else if (url) {
+          // changed their mind — the child was inside the locked site, put them back
+          await openLockedSite(url).catch(() => {});
+        }
       },
       onDone: () => { if (!settled && url) openLockedSite(url).catch(() => {}); }
     });

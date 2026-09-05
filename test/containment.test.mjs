@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
-  containCountdownLabel, CONTAIN_MAX_MIN
+  containCountdownLabel, CONTAIN_MAX_MIN, relockChoice
 } from '../www/js/plan.js';
 
 test('a lock with no end runs until the parent releases it', () => {
@@ -98,4 +98,19 @@ test('the countdown label is human, and empty when there is no end', () => {
   assert.equal(containCountdownLabel(90 * 60_000), '1 ש׳ 30 דק׳');
   assert.equal(containCountdownLabel(120 * 60_000), '2 ש׳');
   assert.doesNotMatch(containCountdownLabel(NaN), /NaN/);
+});
+
+test('relockChoice: an active lock offers release OR re-lock, and the mapping cannot invert (v1.0.76)', () => {
+  // The reported bug: with a lock active every padlock tap was release-only, so the "how
+  // long?" dialog appeared on the FIRST lock and never again. The fix is a choice after the
+  // code; this pins the ok/third mapping so a swapped pair can't hand a child a release where
+  // the parent meant to re-lock.
+  assert.equal(relockChoice('ok'), 'release', 'the primary button releases');
+  assert.equal(relockChoice('third'), 'relock', 're-lock is the path that was missing');
+  // anything that is NOT an explicit answer leaves the lock exactly as it was
+  assert.equal(relockChoice('cancel'), 'none');
+  assert.equal(relockChoice('dismiss'), 'none');
+  assert.equal(relockChoice(''), 'none');
+  assert.equal(relockChoice(undefined), 'none');
+  assert.equal(relockChoice(null), 'none');
 });

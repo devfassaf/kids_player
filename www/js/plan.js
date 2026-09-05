@@ -2949,6 +2949,27 @@ export function containmentChrome({ active = false, mode = null, atLockFolder = 
 }
 
 /**
+ * v1.0.76 — PURE: what a padlock tap does when a lock is ALREADY active.
+ *
+ * The reported bug: with a lock active, EVERY padlock tap was release-only (an early
+ * return), so a parent who had locked a site and then wanted to lock the app — or just
+ * change the duration — could never reach the "how long?" dialog. It only ever appeared on
+ * the FIRST lock. The fix is a choice after the code: release, or re-lock with a fresh
+ * duration (the user's decision 2026-09-06).
+ *
+ * This maps the dialog answer. 'ok' is the primary button = RELEASE (the common intent when
+ * a 🔒 is showing); 'third' = RE-LOCK (the path that did not exist); anything else — cancel,
+ * scrim dismiss — leaves the lock exactly as it was. Pinning the ok/third mapping here stops
+ * a silent inversion (swapping the two buttons would hand a child a release where the parent
+ * meant to re-lock).
+ */
+export function relockChoice(answer) {
+  if (answer === 'ok') return 'release';
+  if (answer === 'third') return 'relock';
+  return 'none';
+}
+
+/**
  * PURE: minutes for a new lock. 0 is a real answer ("until I unlock it"), so it must
  * survive; anything unusable falls back to the remembered value and then to 0 — the
  * planRejectedPurge rule (a typo must never invent a short lock the parent did not ask

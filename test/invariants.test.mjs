@@ -325,6 +325,29 @@ test('the containment lock cannot be escaped, and releases only what it took (v1
   }
 });
 
+test('an ACTIVE lock offers re-lock, not release-only, and re-lock asks the duration again (v1.0.76)', () => {
+  // ⚠️ THE REPORTED BUG: with a lock active, every padlock tap was release-only (an early
+  // return), so the "how long?" dialog appeared on the FIRST lock and never again — a parent
+  // who had locked a site and then wanted to lock the app could not reach it.
+  const app = CODE.get('www/js/app.js');
+  const tap = fnSlice(app, 'async function onLockTap(');
+  // the active branch must present a CHOICE routed through the pure decision, not just release
+  assert.match(tap, /relockChoice\(/, 'onLockTap no longer offers a choice — it is release-only again');
+  assert.match(tap, /askKid\(/, 'the active branch shows no dialog — the parent cannot choose to re-lock');
+  // re-lock must reach the duration dialog (engageLock → askLockDuration), the whole point
+  assert.match(tap, /engageLock\(scope\)/, 'the re-lock path does not re-engage the tapped scope');
+  const engage = fnSlice(app, 'function engageLock(');
+  assert.match(engage, /askLockDuration\(/, 'engageLock never opens the "how long?" dialog');
+  // the FRESH-lock path (no active lock) still asks the code THEN the duration — engageLock
+  // runs inside onSuccess, never before the PIN
+  assert.match(tap, /onSuccess: \(\) => \{ engageLock\(scope\); \}/,
+    'a fresh lock skips the code screen — engageLock must sit inside onSuccess');
+  // the site viewer's padlock got the SAME fix (it was release-only too)
+  const site = fnSlice(app, 'async function onSiteLockTap(');
+  assert.match(site, /relockChoice\(/, 'the site viewer padlock is release-only again');
+  assert.match(site, /askLockDuration\('site'/, 'the site re-lock never asks the duration');
+});
+
 test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
   const app = CODE.get('www/js/app.js');
   const plan = CODE.get('www/js/plan.js');
