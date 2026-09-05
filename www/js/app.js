@@ -13,7 +13,8 @@ import { playItem, stop, playbackState, pauseCurrent, resumeCurrent, seekRelativ
 import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
-  setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission } from './platform.js';
+  setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission,
+  pipSupported, setPipState, onPipChanged, onPipHidden } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml, rulesForLockedSite } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -23,13 +24,15 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
-  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES } from './config.js';
+  CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES,
+  PIP_TRACK_MAX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation, planCallResume, backgroundPlayDecision, opensFullscreen } from './playerlogic.js';
+  fullscreenOrientation, planCallResume, backgroundPlayDecision, opensFullscreen,
+  pipEligibility, pipSkipTarget } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -85,6 +88,13 @@ let giftStates = new Map();           // key -> profileVideoState record (gifts 
 let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
 let bgPlayEnabled = false;            // v1.0.63: the active profile's synced 'bgPlay' setting
 let bgPlayLive = false;               // …and whether the foreground service is running now
+let pipEnabled = false;               // v1.0.76: the active profile's synced 'pip' setting
+let pipAvailable = false;             // …and whether this device can PiP at all (API 26+, not TV)
+// v1.0.76 — set by the native pipChanged event, which Android fires BEFORE the onPause that
+// entering PiP causes; the screen-off pause handler reads it to tell "shrunk to a floating
+// window" (keep playing) from "actually backgrounded" (bank the spot and fall silent).
+let inPipMode = false;
+let pipTrack = null;                  // { scope, folderId, keys, items } — the ⏮/⏭ order, frozen
 let recentLimit = RECENT_DEFAULT_LIMIT; // v1.0.57: 🕒 folder size, per profile, synced (0 = off)
 // v1.0.12 grouping of loose singles — record arrays built by ONE bulk read in
 // buildFolders and paginated directly (no per-key IDB reads on render).
@@ -505,6 +515,7 @@ async function clearContainment(pid = activeProfileId) {
   } catch { /* browser preview / plugin absent */ }
   containPinHeld = false;
   containState = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0 };
+  refreshPipState().catch(() => {}); // v1.0.76: a released lock may re-allow PiP
 }
 
 /**
@@ -683,6 +694,7 @@ async function commitLockSetup() {
   await prefSet(CONTAIN_LAST_MIN, String(minutes)); // remembered for next time
   lockSetupCtx = null;
   await applyContainment();
+  refreshPipState().catch(() => {}); // v1.0.76: a containment lock refuses PiP — push it NOW
   // Land the child where the lock holds them.
   if (ctx.mode === 'folder') { folderId = ctx.folderId; nav.reset('folder'); await renderFolderView(); }
   else if (ctx.mode === 'sites') { nav.reset('sites'); renderSitesView(); }
@@ -850,7 +862,10 @@ async function tickIdleSleep() {
   // and a parent's setting saying "keep playing", nobody is meant to be looking, and there
   // is nothing to show a prompt on. The counter is held at NOW rather than paused, so the
   // full window starts again the moment the app comes back to the foreground.
-  if (bgPlayLive && document.hidden) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
+  // v1.0.76 — and while shrunk into a PiP window, for the same reason turned sideways:
+  // the prompt renders inside #player-wrap, and a tap on a PiP window reaches only the
+  // system's own controls — a question nobody can answer would just park the video.
+  if ((bgPlayLive && document.hidden) || inPipMode) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
   const afterMin = screenOffMinutes(
     await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
   const st = playbackState();
@@ -936,7 +951,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'bgplay-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'bgplay-owner', 'pip-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1602,6 +1617,10 @@ function registerViews() {
       stop();
       wake.releaseAll();
       currentWatch = null;
+      // v1.0.76 — no video, no PiP: the pushed eligibility follows the watch view down,
+      // and a stale track must not steer a later session's ⏮/⏭.
+      pipTrack = null;
+      refreshPipState().catch(() => {});
     }
   });
   // Leaving the pin view WITHOUT success (cancel button / hardware back) resolves
@@ -1746,6 +1765,10 @@ async function loadGiftStates() {
   // playhead before pausing), so the answer has to be in memory before the screen goes off.
   try { bgPlayEnabled = (await getSetting(activeProfileId, 'bgPlay', false)) === true; }
   catch { bgPlayEnabled = false; }
+  // v1.0.76 — same again: the PiP decision is PUSHED to native ahead of the HOME press
+  // (onUserLeaveHint is synchronous), so the flag must live in memory per profile.
+  try { pipEnabled = (await getSetting(activeProfileId, 'pip', false)) === true; }
+  catch { pipEnabled = false; }
   // v1.0.57: and 🕒's size. buildFolders, the pager and the watch stamp all need it
   // synchronously, and it must be re-read HERE rather than cached once per launch — a peer
   // can change it (the number is synced) and a profile switch changes whose number it is.
@@ -3570,6 +3593,69 @@ async function disarmBackgroundPlayback() {
   await stopBackgroundPlayback().catch(() => {});
 }
 
+/* ---------------- picture-in-picture (v1.0.76) ---------------- */
+
+/**
+ * Push the PiP decision to the native side, where `onUserLeaveHint` (the HOME press) reads
+ * it SYNCHRONOUSLY — the `bgPlayEnabled` cached-decision shape, one layer down. Called
+ * wherever the answer can change: a video opens or leaves, the player reports play/pause,
+ * a containment lock engages or releases, the setting flips, a profile activates.
+ *
+ * Every LOCK refuses PiP (pure `pipEligibility` owns the rule): a PiP window floats over
+ * the LAUNCHER, i.e. it walks the child out of the app with the video in tow — exactly the
+ * door the kiosk, the containment locks and the scheduled break exist to close.
+ */
+async function refreshPipState() {
+  if (!pipAvailable) return; // browser, pre-8 Android, TV — nothing to push to
+  let kiosk = false;
+  try { kiosk = (await exitLockOn()) === true; } catch { kiosk = true; } // unreadable ⇒ strict
+  const st = playbackState();
+  const { eligible } = pipEligibility({
+    enabled: pipEnabled, supported: pipAvailable, tv: false, // TV already folded into pipAvailable
+    watching: nav.isActive('watch'), playing: !!(st && st.playing), item: currentWatch,
+    kiosk, contained: containState.active
+  });
+  await setPipState({ eligible, playing: !!(st && st.playing) });
+}
+
+/**
+ * The ⏮/⏭ order: the SAME list the grid under the player pages (`pageAnyFolder` — THE
+ * pagination entry point, the v1.0.63 precedent), frozen once so the floating window can
+ * never disagree with the grid the child last saw. Built lazily — on PiP entry or on the
+ * first skip — so a family that never uses PiP pays no extra read per video.
+ */
+async function buildPipTrack() {
+  const scope = watchCtx.scope;
+  const fid = watchCtx.folderId;
+  if (!scope || !fid || !currentWatch) { pipTrack = null; return; }
+  try {
+    const res = await pageAnyFolder(scope, fid, {
+      offset: 0, limit: PIP_TRACK_MAX, recentSnapshot: watchCtx.recent || null
+    });
+    const items = new Map();
+    for (const rec of res.items) items.set(rec.key, rec);
+    pipTrack = { scope, folderId: fid, keys: res.items.map((r) => r.key), items };
+  } catch { pipTrack = null; } // no track = dead skip buttons, never a crash
+}
+
+/** A ⏮/⏭ from the PiP window. The state is RE-READ after every await (the v1.0.57 rule):
+ *  the command is retained natively and can land seconds after the child left the video. */
+async function pipSkip(action) {
+  if (!pipEnabled || !currentWatch || !nav.isActive('watch')) return;
+  if (!pipTrack || pipTrack.scope !== watchCtx.scope || pipTrack.folderId !== watchCtx.folderId) {
+    await buildPipTrack();
+  }
+  if (!pipTrack || !currentWatch || !nav.isActive('watch')) return;
+  // the SAME predicate tileEl renders a wrapped gift by — the skip must agree with the grid
+  const isGift = (k) => { const g = giftStates.get(k); return !!(g && g.giftRank && !g.unwrappedAt); };
+  const key = pipSkipTarget({
+    keys: pipTrack.keys, currentKey: currentWatch.key,
+    dir: action === 'next' ? 1 : -1, isGift
+  });
+  const item = key ? pipTrack.items.get(key) : null;
+  if (item) await openWatch(item);
+}
+
 /**
  * A ⏮/⏯/⏭ tap on the notification. Every decision stays in JS — the service knows nothing
  * about folders, gifts or the end of a list.
@@ -3579,7 +3665,13 @@ async function disarmBackgroundPlayback() {
  * and starting a video then would be a surprise noise rather than a control.
  */
 async function handlePlaybackCommand(action) {
-  if (!bgPlayEnabled || !currentWatch) return;
+  // v1.0.76 — the PiP window's ⏮/⏭ are real track skips (user decision 2026-09-06), routed
+  // BEFORE the bgPlay gate: PiP is its own feature and must work with background playback
+  // off. pipSkip re-checks everything itself.
+  if (action === 'prev' || action === 'next') { await pipSkip(action); return; }
+  if (!currentWatch) return;
+  // the notification's buttons need bgPlay; the PiP window's ⏯ needs pip — either arms ⏯
+  if (!bgPlayEnabled && !pipEnabled) return;
   if (action === 'toggle') {
     const st = playbackState();
     if (!st) return;
@@ -3596,6 +3688,9 @@ async function handlePlaybackCommand(action) {
   // clamped inside player.seekRelative, which is the invariant this app has already paid
   // for once: an unclamped forward seek runs past the end and EJECTS the child from the
   // video. Nothing is awaited before it, so the position cannot go stale under us.
+  // (v1.0.76: these two verbs belong to the NOTIFICATION alone, which only exists under
+  // bgPlay — a retained tap delivered after the setting flipped off stays inert.)
+  if (!bgPlayEnabled) return;
   if (action !== 'fwd' && action !== 'back') return;
   if (seekRelative(action) === null) return;
   const st = playbackState();
@@ -3668,6 +3763,9 @@ async function openWatch(item) {
   // background, so waiting for the screen to go off would be too late. A YouTube video, or
   // the setting being off, disarms instead — the notification must never outlive its video.
   armBackgroundPlayback(item).catch(() => {});
+  // v1.0.76 — the PiP decision follows the video, pushed AHEAD of the HOME press
+  // (onUserLeaveHint is synchronous and cannot ask the bridge).
+  refreshPipState().catch(() => {});
 
   // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
   // is stored, or the stored stop is inside the tail. giftStates mirrors the whole
@@ -3700,7 +3798,7 @@ async function openWatch(item) {
     startAt,
     // v1.0.74 — the lock screen and the car follow the REAL state, not just the last button
     // pressed on the notification
-    onPlayState: (playing) => { republishBackgroundState(playing).catch(() => {}); },
+    onPlayState: (playing) => { republishBackgroundState(playing).catch(() => {}); refreshPipState().catch(() => {}); },
     onExit: (reason) => { if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch()); },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }
@@ -4382,6 +4480,10 @@ async function refreshParent() {
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
   $('resume-toggle').checked = (await getSetting(activeProfileId, 'resume', false)) === true;
   $('bgplay-toggle').checked = (await getSetting(activeProfileId, 'bgPlay', false)) === true;
+  // v1.0.76 — PiP: the row exists only where the device can honour it (API 26+, not TV);
+  // showing a dead toggle would be a promise the tablet cannot keep.
+  $('pip-toggle').checked = (await getSetting(activeProfileId, 'pip', false)) === true;
+  $('pip-row').classList.toggle('hidden', !pipAvailable);
   // v1.0.31: scheduled lock — load both numbers (0 after = off)
   $('lock-after-min').value = String(Number(await getSetting(activeProfileId, 'lockAfterMin', 0)) || 0);
   $('lock-duration-min').value = String(Number(await getSetting(activeProfileId, 'lockDurationMin', SCHED_LOCK_DEFAULT_DURATION_MIN)) || SCHED_LOCK_DEFAULT_DURATION_MIN);
@@ -8527,6 +8629,19 @@ function wire() {
         : 'ניגון ברקע הופעל, אבל בלי הרשאת הודעות לא יופיעו כפתורי הניגון. אפשר לאשר בהגדרות המכשיר ← אפליקציות ← הסרטונים שלי ← התראות';
     msg.className = notif ? 'form-msg ok' : 'form-msg warn';
   });
+  // v1.0.76 — PiP. The flipped answer must reach the NATIVE cache now: the next HOME press
+  // reads the pushed state synchronously, not the setting.
+  $('pip-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'pip', e.target.checked);
+    pipEnabled = e.target.checked;
+    maybeSchedulePush();
+    refreshPipState().catch(() => {});
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'מסך קטן הופעל ✅ — כפתור הבית יקטין את הסרטון לחלון צף במקום לעצור אותו'
+      : 'מסך קטן כובה — כפתור הבית עוצר את הסרטון כרגיל';
+    msg.className = 'form-msg ok';
+  });
   // v1.0.31: scheduled per-profile lock — two synced numbers. Clamp to sane bounds and
   // reflect the outcome. A change takes effect on the child's next armed cycle.
   const saveSchedLock = async () => {
@@ -8626,6 +8741,7 @@ function wire() {
       await unlockTask();
     }
     await applyExitLockUi();
+    refreshPipState().catch(() => {}); // v1.0.76: the kiosk refuses PiP — push the new answer
     $('settings-msg').textContent = note;
     $('settings-msg').className = 'form-msg ok';
   });
@@ -8849,6 +8965,37 @@ async function init() {
     }
   } catch {}
 
+  // v1.0.76 — PiP capability, resolved once. TV is folded in here (a remote cannot drive a
+  // floating window, and PiP on TV is a leanback feature this player does not implement);
+  // pure pipEligibility still refuses `tv` on its own for the callers that pass it.
+  try { pipAvailable = !document.documentElement.classList.contains('tv') && await pipSupported(); }
+  catch { pipAvailable = false; }
+  // Entering/leaving the floating window. `inPipMode` must be true BEFORE the appStateChange
+  // that PiP entry causes — Android fires onPictureInPictureModeChanged before onPause, and
+  // the bridge preserves event order (device checklist item).
+  onPipChanged((active) => {
+    inPipMode = active;
+    document.documentElement.classList.toggle('pip', active);
+    if (active) {
+      // nobody can answer "עדיין צופים?" inside a PiP window — hold the idle clock
+      idleLastInputAt = Date.now();
+      hideIdlePrompt();
+      buildPipTrack().catch(() => {});
+    }
+    refreshPipState().catch(() => {});
+  });
+  // The window went away — dismissed with its X, or the screen turned off over it. No
+  // appStateChange fires here (the activity already paused when PiP began), so this door
+  // repeats the v1.0.32 contract: save FIRST (the live playhead), then pause IN PLACE —
+  // unless background playback legitimately keeps an audio file sounding.
+  onPipHidden(() => {
+    const st = playbackState();
+    saveWatchPosition(currentWatch, st);
+    const bg = backgroundPlayDecision({ enabled: bgPlayEnabled && bgPlayLive, playing: !!(st && st.playing), item: currentWatch });
+    if (!bg.play) pauseCurrent();
+    if (st && st.playing) checkCallResume().catch(() => {});
+  });
+
   // v1.0.11: re-arm the exit lock on every launch (pinning does not survive restarts).
   // v1.0.25: the lock is per-profile now, and this runs BEFORE a profile is picked — so
   // it arms from the LAST active one. Without that there is an unlocked window between
@@ -8870,6 +9017,14 @@ async function init() {
   // heartbeat notices the pause and pins itself). saveWatchPosition is a no-op while the
   // resume setting is off — the in-session position lives in the paused player itself.
   onAppPause(() => {
+    // v1.0.76 — ENTERING PiP IS NOT A BACKGROUNDING. Android pauses the activity when the
+    // video shrinks into the floating window, so this very handler fires — but the WebView
+    // stays VISIBLE and the whole point is that playback continues. `inPipMode` is set by
+    // the native pipChanged event, which Android delivers BEFORE this appStateChange
+    // (onPictureInPictureModeChanged precedes onPause on entry, and the bridge preserves
+    // order). The window later going away has its own door (onPipHidden), which banks the
+    // spot and pauses exactly like the body below.
+    if (inPipMode) return;
     // v1.0.57: read the playhead ONCE, BEFORE pausing — `saveWatchPosition` needs the live
     // clock, and the call watcher needs to know whether the video was actually PLAYING when
     // the app was taken away. After `pauseCurrent()` that answer is always "no", and arming

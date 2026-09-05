@@ -549,3 +549,65 @@ test('opensFullscreen: only a KNOWN audio file opts out (v1.0.73)', async () => 
   assert.equal(opensFullscreen(null), false);
   assert.equal(opensFullscreen(), false);
 });
+
+/* ---------------- picture-in-picture (v1.0.76) ---------------- */
+
+test('pipEligibility: opt-in, both engines, playing only — and EVERY lock refuses it', async () => {
+  const { pipEligibility } = await import('../www/js/playerlogic.js');
+  const file = { type: 'file', title: 'שיר' };
+  const yt = { type: 'youtube', id: 'abc' };
+  const base = { enabled: true, supported: true, tv: false, watching: true, playing: true };
+  // ⚠️ YOUTUBE IS INCLUDED (user decision 2026-09-06) — the opposite of bgPlay, and the
+  // reason is structural: in PiP the activity stays VISIBLE, so the WebView is never
+  // throttled or evicted. The bgPlay exclusion rationale does not apply.
+  assert.deepEqual(pipEligibility({ ...base, item: yt }), { eligible: true, why: 'ok' });
+  assert.deepEqual(pipEligibility({ ...base, item: file }), { eligible: true, why: 'ok' });
+  // the default is today's behaviour: HOME pauses, nothing floats
+  assert.deepEqual(pipEligibility({ ...base, item: file, enabled: false }),
+    { eligible: false, why: 'off' });
+  // ⚠️ EVERY LOCK REFUSES PiP — the floating window sits over the LAUNCHER, i.e. it is a
+  // door out of the app, which is exactly what these locks exist to close.
+  assert.deepEqual(pipEligibility({ ...base, item: file, kiosk: true }),
+    { eligible: false, why: 'locked' });
+  assert.deepEqual(pipEligibility({ ...base, item: file, contained: true }),
+    { eligible: false, why: 'locked' });
+  // a lock outranks the setting being on AND a video playing — order of refusals is safety-first
+  assert.equal(pipEligibility({ ...base, item: file, kiosk: true, enabled: true }).eligible, false);
+  // a paused video backgrounds normally (YouTube's own behaviour): no frozen frame floats
+  assert.deepEqual(pipEligibility({ ...base, item: file, playing: false }),
+    { eligible: false, why: 'paused' });
+  // no watch view / no item = nothing to shrink
+  assert.deepEqual(pipEligibility({ ...base, item: null }), { eligible: false, why: 'no-video' });
+  assert.deepEqual(pipEligibility({ ...base, item: file, watching: false }),
+    { eligible: false, why: 'no-video' });
+  // unsupported device / TV: refused before anything else, whatever the setting says
+  assert.deepEqual(pipEligibility({ ...base, item: file, supported: false }),
+    { eligible: false, why: 'unsupported' });
+  assert.deepEqual(pipEligibility({ ...base, item: file, tv: true }),
+    { eligible: false, why: 'unsupported' });
+  assert.equal(pipEligibility({}).eligible, false);
+  assert.equal(pipEligibility().eligible, false);
+});
+
+test('pipSkipTarget: grid order, gifts skipped never opened, no wrap-around', async () => {
+  const { pipSkipTarget } = await import('../www/js/playerlogic.js');
+  const keys = ['a', 'b', 'c', 'd'];
+  assert.equal(pipSkipTarget({ keys, currentKey: 'b', dir: 1 }), 'c');
+  assert.equal(pipSkipTarget({ keys, currentKey: 'b', dir: -1 }), 'a');
+  // ⚠️ A WRAPPED GIFT IS SKIPPED, NEVER OPENED (the v1.0.63 rule): its first TAP unwraps
+  // and deliberately does not play — starting it from a floating window would consume the
+  // video while leaving the tile wrapped forever.
+  const gift = (k) => k === 'c';
+  assert.equal(pipSkipTarget({ keys, currentKey: 'b', dir: 1, isGift: gift }), 'd');
+  // a run of gifts to the end = nothing to skip to
+  assert.equal(pipSkipTarget({ keys, currentKey: 'b', dir: 1, isGift: (k) => k === 'c' || k === 'd' }), null);
+  // NO WRAP-AROUND — a chain that loops would play all night
+  assert.equal(pipSkipTarget({ keys, currentKey: 'd', dir: 1 }), null);
+  assert.equal(pipSkipTarget({ keys, currentKey: 'a', dir: -1 }), null);
+  // a current video not on the track (folder changed under us) = dead button, not a jump
+  assert.equal(pipSkipTarget({ keys, currentKey: 'zz', dir: 1 }), null);
+  // a THROWING gift predicate reads as "gift" — unknown must skip, never open (fail closed)
+  assert.equal(pipSkipTarget({ keys: ['a', 'b'], currentKey: 'a', dir: 1, isGift: () => { throw new Error('x'); } }), null);
+  assert.equal(pipSkipTarget({}), null);
+  assert.equal(pipSkipTarget(), null);
+});

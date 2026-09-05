@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.0.76 — "previous track" for the PiP window's RemoteAction (user request: real
+     track skips in the floating window, like YouTube's own).
+
+     The glyph is the standard media-transport ⏮ (bar + triangle), NOT mirrored for RTL —
+     transport buttons keep their physical direction in every player a child has seen.
+
+     Flat white on transparent: a RemoteAction icon is drawn from its ALPHA channel and
+     tinted by the system, so colour here would be thrown away (the v1.0.66 rule).
+
+     No raster fallbacks, deliberately (the v1.0.69 rule): plain VectorDrawable paths are
+     API 21+, minSdk is 22, and PiP itself is API 26+ — nothing here needs android:fillType,
+     which is what forces AAPT to emit PNGs for ic_notification.xml. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M6,6h2v12H6zM9.5,12l8.5,6V6z" />
+</vector>

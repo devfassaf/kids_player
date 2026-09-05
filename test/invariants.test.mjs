@@ -4404,3 +4404,151 @@ test('the lock screen follows the PLAYER, not the last button pressed (v1.0.74)'
   assert.match(toggle, /if \(st\.playing\) pauseCurrent\(\); else resumeCurrent\(\);/,
     'the toggle no longer just asks the player and lets the event report back');
 });
+
+/* ---------------- picture-in-picture (v1.0.76) ---------------- */
+
+test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding, and every lock refuses it (v1.0.76)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1) ⚠️ THE PAUSE GATE COMES FIRST. Entering PiP fires the very appStateChange the
+  //    v1.0.32 screen-off handler listens to — without this gate the video pauses the
+  //    instant it shrinks and the whole feature is a frozen floating frame. It must
+  //    precede the save (a save-then-return would still be harmless, but the gate being
+  //    FIRST is what documents the contract: a shrink is not a backgrounding).
+  const body = appPauseBody(app);
+  assert.ok(body, 'the onAppPause listener is gone');
+  const gate = body.indexOf('if (inPipMode) return');
+  assert.ok(gate >= 0, 'the screen-off handler pauses the video the moment PiP begins');
+  assert.ok(gate < body.indexOf('saveWatchPosition'),
+    'the PiP gate sits after the pause work — the contract is decided before anything runs');
+
+  // 2) THE WINDOW GOING AWAY HAS ITS OWN DOOR, and it repeats the v1.0.32 contract: no
+  //    appStateChange fires (the activity already paused at PiP entry), so onPipHidden
+  //    must save FIRST (the live playhead), consult the bgPlay decision, and pause IN
+  //    PLACE — never stop() (the "הסרטון נעלם" class).
+  const hiddenAt = app.indexOf('onPipHidden(');
+  assert.ok(hiddenAt > 0, 'nothing listens for the PiP window going away — X leaves the video playing blind');
+  const hidden = app.slice(hiddenAt, hiddenAt + 700);
+  const hSave = hidden.indexOf('saveWatchPosition(currentWatch');
+  const hPause = hidden.indexOf('pauseCurrent()');
+  assert.ok(hSave >= 0, 'the PiP-hidden door no longer banks the stop point');
+  assert.ok(hPause >= 0 && hSave < hPause, 'the PiP-hidden door pauses before saving — stale playhead');
+  assert.match(hidden, /backgroundPlayDecision\(/,
+    'the PiP-hidden door ignores bgPlay — screen-off over the window would silence a legitimate background listen');
+  assert.doesNotMatch(hidden, /\bstop\(\)/, 'the PiP-hidden door tears the player down');
+
+  // 3) ELIGIBILITY IS PUSHED AHEAD AND EVERY LOCK REFUSES IT. The pure decision owns the
+  //    rule (unit-tested); this pins the WIRING — refreshPipState must hand it the kiosk
+  //    AND the containment state, or a lock silently stops applying to PiP.
+  const refresh = fnSlice(app, 'async function refreshPipState(');
+  assert.match(refresh, /pipEligibility\(/, 'refreshPipState no longer delegates to the pure decision');
+  assert.match(refresh, /contained: containState\.active/, 'a containment lock no longer reaches the PiP decision');
+  assert.match(refresh, /exitLockOn\(/, 'the kiosk no longer reaches the PiP decision');
+  assert.match(refresh, /kiosk = true/,
+    'an unreadable kiosk setting must read as STRICT (kiosk on), never as "no kiosk"');
+  // …and the push points exist: a video opening, the player reporting play/pause, the
+  // watch view leaving. Each is a moment the pushed answer changes.
+  assert.match(fnSlice(app, 'async function openWatch('), /refreshPipState\(/,
+    'opening a video no longer refreshes the pushed PiP state');
+  assert.match(app, /onPlayState: \(playing\) => \{ republishBackgroundState\(playing\)\.catch\(\(\) => \{\}\); refreshPipState\(\)/,
+    'a play/pause no longer refreshes the PiP state — the window ⏯ icon and auto-enter go stale');
+  const watchLeave = app.slice(app.indexOf("nav.register('watch'"), app.indexOf("nav.register('watch'") + 2600);
+  assert.match(watchLeave, /pipTrack = null/, 'a left watch view keeps a stale ⏮/⏭ track');
+  assert.match(watchLeave, /refreshPipState\(/, 'leaving the watch view leaves PiP armed for a dead video');
+
+  // 4) THE SKIP IS THE GRID'S OWN ORDER — pageAnyFolder, THE pagination entry point (the
+  //    v1.0.63 precedent), never a second reading of the folder rules; and the state is
+  //    RE-READ after the await (the v1.0.57 rule — the command is retained natively).
+  const track = fnSlice(app, 'async function buildPipTrack(');
+  assert.match(track, /pageAnyFolder\(/, 'the PiP track no longer comes from the one pagination entry point');
+  const skip = fnSlice(app, 'async function pipSkip(');
+  assert.match(skip, /pipSkipTarget\(/, 'the skip no longer goes through the pure gift-skipping decision');
+  const afterAwait = skip.slice(skip.indexOf('await buildPipTrack()'));
+  assert.match(afterAwait, /nav\.isActive\('watch'\)/,
+    'pipSkip does not re-check the watch view after its await — a retained ⏭ starts a video into a left screen');
+  // routed BEFORE the bgPlay gate: PiP must work with background playback off
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  const route = cmd.indexOf("action === 'prev'");
+  assert.ok(route >= 0, 'the PiP ⏮/⏭ verbs are not routed at all');
+  assert.ok(route < cmd.indexOf('bgPlayEnabled'),
+    'prev/next sit behind the bgPlay gate — the PiP buttons die whenever background playback is off');
+  assert.match(cmd, /!bgPlayEnabled && !pipEnabled/,
+    'the ⏯ gate no longer admits PiP — the window\'s pause button dies with bgPlay off');
+
+  // 5) the idle "עדיין צופים?" is held during PiP — the prompt renders under a window
+  //    that forwards no taps, so an unanswerable question would just park the video.
+  assert.match(fnSlice(app, 'async function tickIdleSleep('), /\|\| inPipMode/,
+    'the idle timer counts against a PiP session nobody can answer');
+});
+
+test('PiP: the native half is declared, lock-gated, ordered, and identical in both copies (v1.0.76)', () => {
+  // Node cannot press HOME — these are source guards over the halves a behavioural test
+  // cannot reach, comment-stripped (the v1.0.45 lesson: three guards fired on their own
+  // comments).
+  const strip = (s) => s.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const name of ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']) {
+    const m = readRepo(name).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(m, /android:supportsPictureInPicture="true"/,
+      `${name}: the activity cannot PiP — enterPictureInPictureMode throws at runtime`);
+  }
+  // the plugin pair must not drift (MainActivity/manifest already ride the byte-identical
+  // pair test; KidsNativePlugin joins it here because the PiP logic lives in it)
+  assert.equal(readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'),
+    readRepo('native-reference/KidsNativePlugin.java'),
+    'the two KidsNativePlugin copies have drifted');
+
+  const main = strip(readRepo('android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java'));
+  assert.match(main, /onUserLeaveHint\(\)[\s\S]{0,200}?maybeEnterPip\(this\)/,
+    'HOME no longer offers PiP — the 26–30 / 3-button path is dead');
+  assert.match(main, /onPictureInPictureModeChanged\(boolean[\s\S]{0,300}?onPipModeChanged\(this/,
+    'the mode change no longer reaches JS — the pause handler cannot tell a shrink from a backgrounding');
+  // onStop must consult the PiP hook BEFORE super — after it, plugin state may be torn down
+  const stopAt = main.indexOf('public void onStop()');
+  assert.ok(stopAt > 0, 'MainActivity lost its onStop override — a dismissed window leaves the video playing blind');
+  const stopBody = main.slice(stopAt, stopAt + 220);
+  assert.ok(stopBody.indexOf('onPipActivityStopped()') >= 0
+      && stopBody.indexOf('onPipActivityStopped()') < stopBody.indexOf('super.onStop()'),
+    'onStop calls super before the PiP hook');
+
+  const plug = strip(readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'));
+  // ⚠️ THE KIOSK GATE IS NATIVE TOO: maybeEnterPip must refuse under screen pinning even
+  // if a stale eligibility was pushed — the OS would refuse anyway, but the decision must
+  // be ours, not an OS side effect.
+  const enter = plug.slice(plug.indexOf('static void maybeEnterPip('), plug.indexOf('static void maybeEnterPip(') + 600);
+  assert.match(enter, /pipEligible/, 'maybeEnterPip ignores the pushed decision — PiP fires for every family');
+  assert.match(enter, /inLockTaskStatic\(/, 'maybeEnterPip no longer refuses under the kiosk pin');
+  // the three window buttons ride the EXISTING retained command channel
+  for (const verb of ['"prev"', '"next"', '"toggle"']) {
+    assert.match(plug, new RegExp(`emitPlaybackCommand\\(${verb}\\)`),
+      `the PiP window's ${verb} button no longer reaches JS`);
+  }
+  // the broadcast stays inside this app (pre-33 context receivers are world-reachable)
+  assert.match(plug, /setPackage\(a\.getPackageName\(\)\)/,
+    'the PiP action broadcasts lost setPackage — a stranger can skip the child\'s track');
+  assert.match(plug, /FLAG_IMMUTABLE/, 'the PiP PendingIntents are mutable');
+  // both event names, retained (a frozen WebView must not lose the pause contract)
+  assert.match(plug, /notifyListeners\("pipChanged", o, true\)/, 'pipChanged is not retained');
+  assert.match(plug, /notifyListeners\("pipHidden", o, true\)/, 'pipHidden is not retained');
+
+  // the four action icons exist in BOTH res trees (a missing drawable is a runtime crash
+  // when the window builds its actions)
+  for (const dir of ['android/app/src/main/res/drawable', 'native-reference/res/drawable']) {
+    for (const icon of ['ic_pip_prev', 'ic_pip_next', 'ic_pip_play', 'ic_pip_pause']) {
+      // comment-stripped: the file's own comment EXPLAINS why fillType is banned, and a
+      // guard that fires on its explanation is the v1.0.69 trap for the fourth time
+      const svg = readRepo(`${dir}/${icon}.xml`).replace(/<!--[\s\S]*?-->/g, '');
+      assert.match(svg, /fillColor="#FFFFFFFF"/,
+        `${dir}/${icon}: not flat white — a RemoteAction icon is drawn from its alpha and tinted`);
+      assert.doesNotMatch(svg, /fillType/,
+        `${dir}/${icon}: android:fillType is API 24 — it forces PNG fallbacks nothing here generates`);
+    }
+  }
+
+  // the settings row: per-profile, synced, and the tie resolves OFF (the bgPlay asymmetry —
+  // a wrong "on" quietly opens a door out of the app)
+  const settings = CODE.get('www/js/settings.js');
+  assert.match(settings, /pip: false/, "the 'pip' setting lost its safe tie direction");
+  const html = readRepo('www/index.html');
+  assert.match(html, /id="pip-toggle"/, 'the PiP toggle is gone from the settings screen');
+  assert.match(html, /id="pip-row"/, 'the PiP row cannot be hidden on devices that cannot PiP');
+});

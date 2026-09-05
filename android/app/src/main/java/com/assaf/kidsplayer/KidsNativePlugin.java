@@ -194,10 +194,13 @@ public class KidsNativePlugin extends Plugin {
      * the whole TABLET mid-profile-switch (field report). startLockTask() while already
      * pinned re-runs the pinning ceremony on some OEMs. This is the one gate for both.
      */
-    private boolean inLockTask() {
+    private boolean inLockTask() { return inLockTaskStatic(getContext()); }
+
+    /** v1.0.76: static twin, so the PiP hooks (no plugin instance in hand) read the SAME gate. */
+    static boolean inLockTaskStatic(Context ctx) {
         try {
             android.app.ActivityManager am =
-                    (android.app.ActivityManager) getContext().getSystemService(Context.ACTIVITY_SERVICE);
+                    (android.app.ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
             return am != null
                     && am.getLockTaskModeState() != android.app.ActivityManager.LOCK_TASK_MODE_NONE;
         } catch (Exception ignored) { return false; }
@@ -402,6 +405,177 @@ public class KidsNativePlugin extends Plugin {
         JSObject o = new JSObject();
         o.put("action", action == null ? "" : action);
         p.notifyListeners("playbackCommand", o, true);
+    }
+
+    /* ---------------- picture-in-picture (v1.0.76) ---------------- */
+    //
+    // HOME shrinks a playing video into Android's own floating window (user request,
+    // opt-in per profile). JS PUSHES the decision ahead of time (setPipState) because
+    // onUserLeaveHint is synchronous and cannot ask the bridge — the v1.0.63
+    // bgPlayEnabled cached-decision shape, one layer down. MainActivity forwards its
+    // lifecycle moments here so the logic lives in ONE file across both java copies.
+    //
+    // The window's X and expand affordances are ANDROID'S OWN; only ⏮/⏯/⏭ are ours
+    // (RemoteActions). Their taps arrive as broadcasts and ride the EXISTING
+    // playbackCommand channel — the same retained-until-consumed path the notification's
+    // buttons use, so a command tapped while the WebView is busy is never lost.
+
+    private static volatile boolean pipEligible = false;
+    private static volatile boolean pipPlaying = false;
+    private static volatile boolean pipActive = false;
+    private static volatile long pipExitAt = 0L;
+
+    private static final String PIP_PREV = "com.assaf.kidsplayer.PIP_PREV";
+    private static final String PIP_TOGGLE = "com.assaf.kidsplayer.PIP_TOGGLE";
+    private static final String PIP_NEXT = "com.assaf.kidsplayer.PIP_NEXT";
+
+    /** Can this device PiP at all? API 26+ AND the system feature (not every tablet has it). */
+    @PluginMethod
+    public void pipSupported(PluginCall call) {
+        boolean ok = Build.VERSION.SDK_INT >= 26 && hasPipFeature(getContext());
+        JSObject ret = new JSObject();
+        ret.put("value", ok);
+        call.resolve(ret);
+    }
+
+    /**
+     * The cached decision + the real play state (the state drives the ⏯ icon — the
+     * v1.0.74 rule: the icon follows what the player REPORTED, never what was asked for).
+     * Re-applying the params also live-updates an already-open window.
+     */
+    @PluginMethod
+    public void setPipState(PluginCall call) {
+        pipEligible = Boolean.TRUE.equals(call.getBoolean("eligible", false));
+        pipPlaying = Boolean.TRUE.equals(call.getBoolean("playing", false));
+        Activity a = getActivity();
+        if (a != null) a.runOnUiThread(() -> applyPipParams(a));
+        call.resolve();
+    }
+
+    private static boolean hasPipFeature(Context ctx) {
+        try {
+            return ctx.getPackageManager().hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE);
+        } catch (Throwable ignored) { return false; }
+    }
+
+    /** setPictureInPictureParams: arms auto-enter (API 31+) AND refreshes a live window. */
+    static void applyPipParams(Activity a) {
+        if (Build.VERSION.SDK_INT < 26 || !hasPipFeature(a)) return;
+        try { a.setPictureInPictureParams(buildPipParams(a)); }
+        catch (Throwable ignored) { /* never take the player down over a window param */ }
+    }
+
+    @androidx.annotation.RequiresApi(26)
+    private static android.app.PictureInPictureParams buildPipParams(Activity a) {
+        android.app.PictureInPictureParams.Builder b = new android.app.PictureInPictureParams.Builder();
+        // 16:9 always — the library is long-form by doctrine (Shorts are excluded), and an
+        // audio file's music scene renders at whatever shape the window gives it.
+        b.setAspectRatio(new android.util.Rational(16, 9));
+        java.util.List<android.app.RemoteAction> actions = new java.util.ArrayList<>();
+        actions.add(pipAction(a, 1, R.drawable.ic_pip_prev, "הקודם", PIP_PREV));
+        actions.add(pipAction(a, 2, pipPlaying ? R.drawable.ic_pip_pause : R.drawable.ic_pip_play,
+                pipPlaying ? "השהיה" : "ניגון", PIP_TOGGLE));
+        actions.add(pipAction(a, 3, R.drawable.ic_pip_next, "הבא", PIP_NEXT));
+        b.setActions(actions);
+        // API 31+: the system enters PiP by itself on the home GESTURE — smoother than the
+        // onUserLeaveHint fallback, which still covers 26–30 and 3-button navigation.
+        // Never under screen pinning: the kiosk's whole point is that HOME goes nowhere.
+        if (Build.VERSION.SDK_INT >= 31) b.setAutoEnterEnabled(pipEligible && !inLockTaskStatic(a));
+        return b.build();
+    }
+
+    @androidx.annotation.RequiresApi(26)
+    private static android.app.RemoteAction pipAction(Activity a, int req, int icon, String title, String action) {
+        // setPackage keeps the broadcast inside this app: below API 33 a context-registered
+        // receiver is reachable from outside, and a stranger must not skip the child's track.
+        Intent i = new Intent(action).setPackage(a.getPackageName());
+        android.app.PendingIntent pi = android.app.PendingIntent.getBroadcast(a, req, i,
+                android.app.PendingIntent.FLAG_UPDATE_CURRENT | android.app.PendingIntent.FLAG_IMMUTABLE);
+        return new android.app.RemoteAction(
+                android.graphics.drawable.Icon.createWithResource(a, icon), title, title, pi);
+    }
+
+    /** The HOME press (26–30 / 3-button nav): enter the floating window if JS armed it.
+     *  On 31+ auto-enter usually beat us here and the redundant call is a harmless no-op. */
+    static void maybeEnterPip(Activity a) {
+        if (Build.VERSION.SDK_INT < 26 || !pipEligible || !hasPipFeature(a)) return;
+        // The OS refuses PiP under screen pinning anyway; refusing here keeps the kiosk
+        // decision explicit rather than an OS side effect (and skips a pointless throw).
+        if (inLockTaskStatic(a)) return;
+        try { a.enterPictureInPictureMode(buildPipParams(a)); }
+        catch (Throwable ignored) { /* a refused window = an ordinary backgrounding */ }
+    }
+
+    /**
+     * MainActivity.onPictureInPictureModeChanged → here. ORDER IS THE CONTRACT: Android
+     * fires this BEFORE the onPause that PiP entry causes, and bridge events keep their
+     * order — so JS learns "this pause is a shrink, not a backgrounding" before the
+     * appStateChange that would otherwise pause the video (the v1.0.32 handler).
+     */
+    static void onPipModeChanged(Activity a, boolean isIn) {
+        pipActive = isIn;
+        if (isIn) registerPipReceiver(a);
+        else { unregisterPipReceiver(a); pipExitAt = android.os.SystemClock.uptimeMillis(); }
+        KidsNativePlugin p = instance;
+        if (p != null) {
+            JSObject o = new JSObject();
+            o.put("active", isIn);
+            p.notifyListeners("pipChanged", o, true);
+        }
+    }
+
+    /** MainActivity.onResume → here: an EXPAND back into the full app (pip → resumed). */
+    static void onPipActivityResumed() { pipExitAt = 0L; }
+
+    /**
+     * MainActivity.onStop → here. Two shapes mean "the floating window is no longer
+     * visible", and JS must bank the spot and fall silent (its onPipHidden door):
+     *   - the screen went off OVER the window (onStop arrives with pipActive still true);
+     *   - the window was DISMISSED with its X (pipChanged(false), then onStop with no
+     *     onResume in between — an EXPAND resumes instead of stopping, which is the tell).
+     * No appStateChange fires for either: the activity already paused when PiP began.
+     */
+    static void onPipActivityStopped() {
+        boolean dismissed = !pipActive && pipExitAt > 0
+                && android.os.SystemClock.uptimeMillis() - pipExitAt < 2000L;
+        if (!pipActive && !dismissed) return;
+        pipExitAt = 0L;
+        KidsNativePlugin p = instance;
+        if (p != null) {
+            JSObject o = new JSObject();
+            o.put("dismissed", dismissed);
+            p.notifyListeners("pipHidden", o, true);
+        }
+    }
+
+    /** ⏮/⏯/⏭ taps, registered only while the window is up and always unregistered with it. */
+    private static android.content.BroadcastReceiver pipReceiver = null;
+
+    private static void registerPipReceiver(Activity a) {
+        if (pipReceiver != null) return;
+        pipReceiver = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(Context context, Intent intent) {
+                String act = intent == null ? null : intent.getAction();
+                if (PIP_PREV.equals(act)) emitPlaybackCommand("prev");
+                else if (PIP_NEXT.equals(act)) emitPlaybackCommand("next");
+                else if (PIP_TOGGLE.equals(act)) emitPlaybackCommand("toggle");
+            }
+        };
+        android.content.IntentFilter f = new android.content.IntentFilter();
+        f.addAction(PIP_PREV);
+        f.addAction(PIP_TOGGLE);
+        f.addAction(PIP_NEXT);
+        try {
+            if (Build.VERSION.SDK_INT >= 33) a.registerReceiver(pipReceiver, f, Context.RECEIVER_NOT_EXPORTED);
+            else a.registerReceiver(pipReceiver, f);
+        } catch (Throwable ignored) { pipReceiver = null; }
+    }
+
+    private static void unregisterPipReceiver(Activity a) {
+        if (pipReceiver == null) return;
+        try { a.unregisterReceiver(pipReceiver); } catch (Throwable ignored) {}
+        pipReceiver = null;
     }
 
     /* ---------------- share-intent inbox (F12b) ---------------- */

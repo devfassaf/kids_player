@@ -105,6 +105,10 @@ const SAFE_ON_TIE = {
   // a parent one tap to turn it back on; a tie that answers "on" leaves a tablet playing
   // in a bag, at night, on a device where nobody asked for it.
   bgPlay: false,
+  // v1.0.76: HOME shrinks the video into a floating PiP window. FALSE on a tie — the bgPlay
+  // asymmetry again, plus one more: PiP puts the LAUNCHER under the child's finger, so a
+  // tie that answers "on" quietly opens a door out of the app nobody agreed to.
+  pip: false,
   // v1.0.45: hide the websites button. Note this is the TIE rule, not the default — an
   // unwritten `sitesEnabled` reads as ON (the parent asked for it on by default), while
   // two devices disagreeing at the same millisecond resolve to the narrower surface.

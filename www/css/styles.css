@@ -1369,3 +1369,22 @@ html.tv .tile:active, html.tv button:active { transform: none; }
 .ls-preset.is-sel { border-color: var(--brand); }
 /* the countdown chip on the child's home while a timed lock runs */
 .lock-left { font-size: 12px; color: var(--muted); margin-inline-start: 6px; }
+
+/* ---------------- picture-in-picture (v1.0.76) ----------------
+   While the app sits inside Android's floating PiP window, the WHOLE activity is scaled
+   into a ~2-inch rectangle — so the watch screen strips to the video alone. This is CSS
+   only (`html.pip`, toggled by the native pipChanged event): a fullscreen video already
+   fills the window through the native custom view, and these rules cover the windowed
+   case (an audio file's music scene, a video the child kept windowed). Everything else —
+   the top bar, the title, the grid, the pager — would be unreadable confetti at that size. */
+html.pip #view-watch .watch-top,
+html.pip #view-watch .watch-title,
+html.pip #view-watch .swipe-vp,
+html.pip #view-watch .pager,
+html.pip #view-watch .watch-status { display: none !important; }
+html.pip .player-wrap {
+  position: fixed; inset: 0; width: 100%; height: 100%;
+  max-width: none; aspect-ratio: auto; border-radius: 0; margin: 0; z-index: 500;
+}
+/* the page behind must not paint a scrollbar-width sliver beside the fixed player */
+html.pip, html.pip body { overflow: hidden; }

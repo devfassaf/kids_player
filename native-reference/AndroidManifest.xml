@@ -19,12 +19,17 @@
         <!-- Free rotation (user request 2026-07-29, replacing the earlier sensorLandscape
              lock): the app now supports portrait AND landscape; configChanges includes
              orientation so the WebView handles rotation without an activity restart. -->
+        <!-- v1.0.76: supportsPictureInPicture — HOME can shrink a playing video into a
+             floating window (opt-in per profile, pushed from JS; onUserLeaveHint decides).
+             configChanges above already carries smallestScreenSize|screenLayout, which is
+             what lets the PiP resize happen without recreating the activity mid-video. -->
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
+            android:supportsPictureInPicture="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

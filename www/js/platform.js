@@ -492,6 +492,48 @@ export function onPlaybackCommand(fn) {
   } catch {}
 }
 
+/* ---------------- picture-in-picture (v1.0.76) ----------------
+ * HOME shrinks a playing video into Android's own PiP window (user request, opt-in per
+ * profile). JS PUSHES the eligibility ahead of time (`setPipState`) because the native
+ * `onUserLeaveHint` is synchronous and cannot ask the bridge; the native side caches it —
+ * the same shape as the v1.0.63 `bgPlayEnabled` cache, one layer down. Browser dev:
+ * unsupported, and every wrapper is a silent no-op. */
+
+/** Can this device do PiP at all? (API 26+, has the system feature, and not a TV.) */
+export async function pipSupported() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.pipSupported) return false;
+  try {
+    const r = await kids.pipSupported();
+    return !!(r && r.value);
+  } catch { return false; }
+}
+
+/** Push the cached PiP decision + the real play state (drives the window's ⏯ icon). */
+export async function setPipState({ eligible = false, playing = false } = {}) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.setPipState) return;
+  try { await kids.setPipState({ eligible: !!eligible, playing: !!playing }); } catch {}
+}
+
+/** Entering/leaving the PiP window. Fires BEFORE the matching appStateChange (Android
+ *  calls onPictureInPictureModeChanged before onPause on entry — device-verified), which
+ *  is what lets the app's own screen-off pause know this pause is not a backgrounding. */
+export function onPipChanged(fn) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.addListener) return;
+  try { kids.addListener('pipChanged', (o) => { try { fn(!!(o && o.active)); } catch {} }); } catch {}
+}
+
+/** The PiP window is no longer visible: dismissed with its X, or the screen went off.
+ *  Either way the video must bank its spot and fall silent unless bgPlay says otherwise —
+ *  no appStateChange fires here (the activity already paused when PiP began). */
+export function onPipHidden(fn) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.addListener) return;
+  try { kids.addListener('pipHidden', (o) => { try { fn(!!(o && o.dismissed)); } catch {} }); } catch {}
+}
+
 export async function audioMode() {
   const kids = plugin('KidsNative');
   if (!kids || !kids.audioMode) return 'unknown';
