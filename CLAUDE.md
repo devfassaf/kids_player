@@ -273,6 +273,86 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.76 — **HOME SHRINKS THE VIDEO INTO A FLOATING WINDOW (PiP)** (user request),
+  **opt-in, per profile, OFF unless a parent turns it on** — the bgPlay shape (v1.0.63),
+  one surface up.
+  - **THE MECHANISM IS ANDROID'S OWN PICTURE-IN-PICTURE** (API 26+): the activity shrinks
+    into a floating window over the launcher. The window's X and expand are the SYSTEM'S
+    OWN affordances; only ⏮/⏯/⏭ are ours (RemoteActions), and their taps ride the EXISTING
+    `playbackCommand` retained-until-consumed channel — no second command path.
+  - ⚠️ **ENTERING PiP FIRES THE VERY appStateChange THE v1.0.32 SCREEN-OFF HANDLER PAUSES
+    ON.** Android pauses the activity when the video shrinks — so without a gate the whole
+    feature is a frozen floating frame. `inPipMode` is set by the native `pipChanged`
+    event, which Android fires BEFORE the onPause (onPictureInPictureModeChanged precedes
+    it, and bridge events keep their order); the handler's FIRST line consults it.
+    Guard-pinned as an ORDER (the gate before the save), and the event order itself is a
+    device checklist item — the one link no browser can prove.
+  - **THE DECISION IS PUSHED AHEAD OF THE HOME PRESS** (`setPipState`): `onUserLeaveHint`
+    is synchronous and cannot ask the bridge — the v1.0.63 cached-decision shape, one layer
+    down, cached as statics in the plugin. Pure `playerlogic.pipEligibility` owns the rule;
+    pushed from openWatch, every onPlayState, the watch view's onLeave, the setting/kiosk
+    toggles, and both containment doors (engage + clear).
+  - ⚠️ **EVERY LOCK REFUSES PiP, AND THAT IS THE SAFETY HALF OF THE FEATURE**: the floating
+    window sits over the LAUNCHER, i.e. HOME with PiP armed walks the child out of the app
+    with the video in tow — exactly the door the kiosk (exitLock), every containment mode
+    and the scheduled break exist to close. Refused in JS (`pipEligibility`: kiosk/contained)
+    AND natively (`maybeEnterPip` re-checks `inLockTaskStatic` — the OS refuses under screen
+    pinning anyway, but the decision must be OURS, not an OS side effect). An unreadable
+    kiosk setting reads as kiosk-ON (strict), and the settings hint SAYS the window floats
+    over the home screen rather than letting a parent discover it. Browser-verified: with
+    the kiosk on, the pushed state was `eligible:false` while the video kept `playing:true`.
+  - **YOUTUBE IS INCLUDED — THE OPPOSITE OF bgPlay, DELIBERATELY** (user decision
+    2026-09-06): in PiP the activity stays VISIBLE, so the WebView is never throttled or
+    evicted — the reason YouTube is excluded from background playback does not apply. The YT
+    engine therefore learned to report play/pause through `cb.onPlayState` (the file engine
+    has since v1.0.74; through `cb`, NEVER `opts` — reuse() swaps it, and `opts` would report
+    into the PREVIOUS video's callbacks). The background service is unaffected: republish is
+    gated on `bgPlayLive`, which YouTube never arms. **Nothing pinned this before** — a plant
+    deleting the YT reporter left the whole suite green, so a new guard covers it.
+  - **⏮/⏭ ARE REAL TRACK SKIPS** (user decision 2026-09-06 — the notification keeps its
+    ±10s, v1.0.68; two surfaces, two jobs). The track is built ONCE from `pageAnyFolder` —
+    THE pagination entry point (the v1.0.63 precedent, capped at `PIP_TRACK_MAX`) — so the
+    window can never disagree with the grid the child last saw. **A wrapped gift is SKIPPED,
+    never opened** (pure `pipSkipTarget`; a THROWING gift predicate reads as "gift" — unknown
+    must skip, fail closed); **no wrap-around** (a chain that loops plays all night); and the
+    state is RE-READ after the await (v1.0.57 — the command is retained natively). The verbs
+    route BEFORE the bgPlay gate: PiP works with background playback off, and the window's ⏯
+    is admitted by `pipEnabled` alone — while ⏪10/⏩10 stay the notification's.
+  - **THE WINDOW GOING AWAY HAS ITS OWN DOOR** (`pipHidden`): the X, or the screen turning
+    off over it, arrive as `onStop` with NO appStateChange (the activity already paused at
+    entry). Natively a dismissal is told from an EXPAND by what follows the mode change —
+    onStop within 2s = dismissed, onResume = expanded. The JS door repeats the v1.0.32
+    contract exactly: save FIRST (the live playhead), consult `backgroundPlayDecision`
+    (screen-off over the window must not silence a legitimate bgPlay listen), pause IN
+    PLACE, never stop().
+  - **"עדיין צופים?" IS HELD DURING PiP** — the prompt renders inside `#player-wrap` and a
+    PiP window forwards no taps to the page, so the question would be unanswerable; the
+    counter is held at NOW like bgPlay's hidden branch (v1.0.63).
+  - **IN THE WINDOW THE APP STRIPS TO THE VIDEO** (`html.pip`, CSS only): the whole activity
+    is scaled into ~2 inches, so the top bar, title, grid and pager would be unreadable
+    confetti. A fullscreen video already fills the window through the native custom view; the
+    CSS covers the windowed case (the audio scene, a windowed video).
+  - ⚠️ **TWO OF THE FIRST GUARDS WERE PROVEN VACUOUS BY THEIR OWN PLANTS**, the lesson of
+    this release: a whole-function match on openWatch was satisfied by the onPlayState
+    callback INSIDE it (re-anchored to the arm call), and a 700-char window from
+    `onPipHidden(` reached INTO the neighbouring onAppPause once comments were stripped and
+    matched THAT handler's `backgroundPlayDecision` (`handlerBody` — the appPauseBody
+    brace-balancing, generalized — replaced it). A char window into app.js is a guess about
+    distance; a balanced body is not. A guard also fired on the icon file's own comment (the
+    v1.0.69 trap, a fourth time — read comment-stripped).
+  - Icons are flat white vectors (alpha-tint, v1.0.66), no raster fallbacks (nothing here
+    uses an API-24 attribute, v1.0.69), unmirrored transport glyphs. `pip: false` joined
+    SAFE_ON_TIE — a tie that answers "on" quietly opens a door out of the app.
+  - 2 unit tests (23 assertions) + 2 invariants guards (42 assertions), every guard proven
+    red on a planted regression (12). APK builds and both PiP-touching java files are
+    byte-identical across copies (KidsNativePlugin joined the parity set); the four drawables
+    are confirmed PACKAGED. Browser-verified with a stubbed bridge on a real audio record:
+    eligibility pushed on play for BOTH engines, the pause gate keeping the video playing on
+    PiP entry, `pipHidden` pausing in place, ⏮/⏭ walking the real grid order with no
+    wrap-around, a wrapped gift skipped, ⏯ working with bgPlay off, the idle prompt held, and
+    the kiosk refusing PiP mid-play. **Real PiP — the window, its buttons, the event order,
+    YouTube's behaviour inside it — is a DEVICE checklist item.**
+
 - v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
   שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
   - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY
