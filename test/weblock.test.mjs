@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 
 import {
   canonicalSitePrefix, navAllowed, matchRule, subresourceAllowed,
-  ruleCandidatesFor, ruleIdFor, shortcutIdFor, extractSiteIconFromHtml
+  ruleCandidatesFor, ruleIdFor, shortcutIdFor, extractSiteIconFromHtml,
+  rulesForLockedSite, rulesForLockedPage
 } from '../www/js/weblock.js';
 
 const ruleFor = (s, extra = {}) => {
@@ -330,4 +331,51 @@ test('an unusual but legal address survives normalization', () => {
   // Path case is significant on most servers, so folding it would silently widen a rule.
   assert.equal(navAllowed([ruleFor('https://example.com/Kids/')], 'https://example.com/kids/'), false,
     'the path must stay case-SENSITIVE — folding it widens the rule');
+});
+
+// ── rulesForLockedPage (v1.0.76, feature 4) ─────────────────────────────────────────
+
+test('rulesForLockedPage: narrows to the page prefix and its sub-pages, never the whole site', () => {
+  // the parent has approved the whole site; a page lock must hold the child on ONE prefix
+  const rules = [ruleFor('https://page.com/')];
+  const locked = rulesForLockedPage(rules, 'https://page.com/abc/1/efg');
+  assert.equal(locked.length, 1, 'a page lock is exactly one synthetic prefix rule');
+
+  // the child may browse the prefix and DEEPER…
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1/efg'), true, 'the locked page itself');
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1/efg/x/y'), true, 'a sub-page');
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1/efg/?q=2'), true, 'a query is dropped from the prefix');
+  // …but NOWHERE else on the site (the whole point of a page lock vs a site lock)
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1'), false, 'a shallower path is out');
+  assert.equal(navAllowed(locked, 'https://page.com/other'), false, 'a sibling section is out');
+  assert.equal(navAllowed(locked, 'https://page.com/'), false, 'the site root is out');
+  // segment-boundary safety (the whole weblock doctrine): efg never admits efgX
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1/efgX'), false, 'efg must not admit efgX');
+
+  // contrast: rulesForLockedSite on the SAME page keeps the whole host
+  const site = rulesForLockedSite(rules, 'https://page.com/abc/1/efg');
+  assert.equal(navAllowed(site, 'https://page.com/other'), true, 'a site lock keeps the whole host');
+});
+
+test('rulesForLockedPage: can only NARROW — it never grants beyond the governing rule', () => {
+  // the approved rule is a SECTION, and the locked page is deeper inside it
+  const rules = [ruleFor('https://page.com/abc/')];
+  const locked = rulesForLockedPage(rules, 'https://page.com/abc/1/efg');
+  // deeper is fine…
+  assert.equal(navAllowed(locked, 'https://page.com/abc/1/efg/z'), true);
+  // …and it is a SUBSET of the section: what the section allowed but the prefix doesn't, is gone
+  assert.equal(navAllowed(locked, 'https://page.com/abc/other'), false,
+    'the page lock is narrower than the section it sits in');
+  // an unmatched page (no governing rule) yields [] — the caller must refuse to engage
+  assert.deepEqual(rulesForLockedPage(rules, 'https://elsewhere.com/x'), [],
+    'a page with no governing rule cannot be locked (fail strict)');
+  assert.deepEqual(rulesForLockedPage([], 'https://page.com/abc/1'), []);
+});
+
+test('rulesForLockedPage: inherits allowExternal from the governing rule', () => {
+  const rules = [ruleFor('https://page.com/', { allowExternal: true })];
+  const locked = rulesForLockedPage(rules, 'https://page.com/abc/1');
+  assert.equal(locked[0].allowExternal, true, 'a site that needs its embeds must keep working when page-locked');
+  const strict = rulesForLockedPage([ruleFor('https://page.com/')], 'https://page.com/abc/1');
+  assert.equal(strict[0].allowExternal, false);
 });

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText,
-  containCountdownLabel, CONTAIN_MAX_MIN, relockChoice
+  containCountdownLabel, CONTAIN_MAX_MIN, relockChoice, siteLockGrain
 } from '../www/js/plan.js';
 
 test('a lock with no end runs until the parent releases it', () => {
@@ -113,4 +113,40 @@ test('relockChoice: an active lock offers release OR re-lock, and the mapping ca
   assert.equal(relockChoice(''), 'none');
   assert.equal(relockChoice(undefined), 'none');
   assert.equal(relockChoice(null), 'none');
+});
+
+test('siteLockGrain: whole-site is the safe default, page is the narrower opt-in (v1.0.76)', () => {
+  assert.equal(siteLockGrain('ok'), 'host', 'the primary button keeps the whole site (v1.0.67 behaviour)');
+  assert.equal(siteLockGrain('third'), 'prefix', 'the page lock is the narrower opt-in');
+  for (const back of ['cancel', 'dismiss', '', undefined, null]) {
+    assert.equal(siteLockGrain(back), null, `${String(back)} = backed out, engage nothing`);
+  }
+});
+
+test('evalContainment carries the site grain, defaulting to the WIDER host lock (v1.0.76)', () => {
+  const su = 'https://page.com/abc/1';
+  // an explicit prefix grain is honoured
+  assert.equal(evalContainment({ mode: 'site', siteUrl: su, siteGrain: 'prefix', until: 0 }).siteGrain, 'prefix');
+  // ⚠️ anything else — unwritten (a v1.0.67 lock), or corrupted — reads as 'host', never
+  // silently pins a child onto one page
+  assert.equal(evalContainment({ mode: 'site', siteUrl: su, until: 0 }).siteGrain, 'host', 'unwritten grain = whole site');
+  assert.equal(evalContainment({ mode: 'site', siteUrl: su, siteGrain: 'junk', until: 0 }).siteGrain, 'host', 'junk grain = whole site');
+  // grain is meaningless for non-site modes
+  assert.equal(evalContainment({ mode: 'app', until: 0 }).siteGrain, null);
+  assert.equal(evalContainment({ mode: 'folder', folderId: 'cf:1', until: 0 }).siteGrain, null);
+});
+
+test('the confirm text distinguishes a page lock from a whole-site lock (v1.0.76)', () => {
+  const page = containConfirmText({ mode: 'site', siteGrain: 'prefix', siteLabel: 'page.com/abc', minutes: 30 });
+  assert.match(page, /דף/, 'a page lock must say it is a page');
+  assert.match(page, /page\.com\/abc/, 'and name the page');
+  assert.match(page, /שבתוכו/, 'and that sub-pages are included');
+  const site = containConfirmText({ mode: 'site', siteGrain: 'host', siteLabel: 'page.com', minutes: 0 });
+  assert.match(site, /אתר/, 'a whole-site lock says "site"');
+  assert.doesNotMatch(site, /שבתוכו/, 'a whole-site lock is not about sub-pages');
+  // both still say the child cannot leave the app, and never leak undefined
+  for (const t of [page, site]) {
+    assert.match(t, /לצאת מהאפליקציה/);
+    assert.doesNotMatch(t, /undefined|NaN/);
+  }
 });

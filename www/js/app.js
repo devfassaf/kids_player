@@ -15,7 +15,7 @@ import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefR
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
   setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
-  extractSiteIconFromHtml, rulesForLockedSite } from './weblock.js';
+  extractSiteIconFromHtml, rulesForLockedSite, rulesForLockedPage } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
 import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, REJECTED_TTL_DAYS, RESUME_SAVE_MS,
@@ -42,7 +42,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   channelSyncModeDialog, channelSyncModeOutcome,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
-  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText, relockChoice,
+  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText, relockChoice, siteLockGrain,
   folderAncestry, folderSubtreeIds, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
@@ -469,13 +469,14 @@ const containModeKey = (pid) => 'contain:' + pid + ':mode';
 const containFolderKey = (pid) => 'contain:' + pid + ':folder';
 const containUntilKey = (pid) => 'contain:' + pid + ':until';
 const containSiteKey = (pid) => 'contain:' + pid + ':site';   // v1.0.67: the locked site's url
+const containGrainKey = (pid) => 'contain:' + pid + ':sitegrain'; // v1.0.76: 'host' | 'prefix'
 const CONTAIN_LAST_MIN = 'contain:lastMin'; // feature 5: the remembered default
 
 // Runtime OWNERSHIP of the OS pin, the breakPinHeld pattern (v1.0.55): the release must
 // follow what THIS lock actually pinned, never a re-read of some setting — and it must
 // never unpin a session the kiosk owns.
 let containPinHeld = false;
-let containState = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0 };
+let containState = { active: false, mode: null, folderId: null, siteUrl: null, siteGrain: null, msLeft: 0 };
 
 async function readContainment(pid = activeProfileId) {
   if (!pid) return evalContainment({});
@@ -484,6 +485,7 @@ async function readContainment(pid = activeProfileId) {
       mode: await prefGet(containModeKey(pid)),
       folderId: await prefGet(containFolderKey(pid)),
       siteUrl: await prefGet(containSiteKey(pid)),
+      siteGrain: await prefGet(containGrainKey(pid)),
       until: Number(await prefGet(containUntilKey(pid))) || 0
     });
   } catch { return evalContainment({}); }
@@ -491,7 +493,7 @@ async function readContainment(pid = activeProfileId) {
 
 async function clearContainment(pid = activeProfileId) {
   if (!pid) return;
-  for (const k of [containModeKey(pid), containFolderKey(pid), containSiteKey(pid), containUntilKey(pid)]) {
+  for (const k of [containModeKey(pid), containFolderKey(pid), containSiteKey(pid), containGrainKey(pid), containUntilKey(pid)]) {
     await prefRemove(k).catch(() => {});
   }
   // Release ONLY the pin this lock took, and NEVER under the kiosk (the v1.0.36 rule:
@@ -504,7 +506,7 @@ async function clearContainment(pid = activeProfileId) {
     }
   } catch { /* browser preview / plugin absent */ }
   containPinHeld = false;
-  containState = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0 };
+  containState = { active: false, mode: null, folderId: null, siteUrl: null, siteGrain: null, msLeft: 0 };
 }
 
 /**
@@ -666,16 +668,18 @@ let lockSetupCtx = null;
  * "How long?" — asked EVERY time (the user's requirement), pre-filled with the last
  * answer, which is remembered per device. 0 is a real answer: until the parent unlocks.
  */
-async function askLockDuration(mode, fid, siteUrl = null) {
+async function askLockDuration(mode, fid, siteUrl = null, siteGrain = null) {
   const last = normalizeLockMinutes(await prefGet(CONTAIN_LAST_MIN), 0);
-  lockSetupCtx = { mode, folderId: fid, siteUrl, minutes: last };
+  lockSetupCtx = { mode, folderId: fid, siteUrl, siteGrain, minutes: last };
   const title = { folder: 'נעילה על התיקיה', sites: 'נעילה על אתרי האינטרנט',
     site: 'נעילה על האתר', app: 'נעילת האפליקציה' }[mode];
   const f = mode === 'folder' ? (folders.find((x) => x.id === fid) || {}) : {};
   $('ls-title').textContent = 'לכמה זמן לנעול?';
+  // v1.0.76 — a page lock says the PAGE it holds; a whole-site lock says the host.
+  const siteLabel = mode === 'site' && siteUrl
+    ? ' — ' + (siteGrain === 'prefix' ? sitePageLabel(siteUrl) : siteHostLabel(siteUrl)) : '';
   $('ls-sub').textContent = title
-    + (mode === 'folder' && f.title ? ' — "' + f.title + '"' : '')
-    + (mode === 'site' && siteUrl ? ' — ' + siteHostLabel(siteUrl) : '');
+    + (mode === 'folder' && f.title ? ' — "' + f.title + '"' : '') + siteLabel;
   $('ls-min').value = String(last);
   renderLockPresets();
   paintLockExplain();
@@ -704,10 +708,13 @@ function renderLockPresets() {
 
 function paintLockExplain() {
   if (!lockSetupCtx) return;
-  const f = lockSetupCtx.mode === 'folder'
-    ? (folders.find((x) => x.id === lockSetupCtx.folderId) || {}) : {};
+  const ctx = lockSetupCtx;
+  const f = ctx.mode === 'folder' ? (folders.find((x) => x.id === ctx.folderId) || {}) : {};
+  const siteLabel = ctx.mode === 'site' && ctx.siteUrl
+    ? (ctx.siteGrain === 'prefix' ? sitePageLabel(ctx.siteUrl) : siteHostLabel(ctx.siteUrl)) : '';
   $('ls-explain').textContent = containConfirmText({
-    mode: lockSetupCtx.mode, folderTitle: f.title || '', minutes: lockSetupCtx.minutes
+    mode: ctx.mode, folderTitle: f.title || '', minutes: ctx.minutes,
+    siteGrain: ctx.siteGrain === 'prefix' ? 'prefix' : 'host', siteLabel
   });
 }
 
@@ -719,7 +726,12 @@ async function commitLockSetup() {
   const pid = activeProfileId;
   await prefSet(containModeKey(pid), ctx.mode);
   if (ctx.mode === 'folder') await prefSet(containFolderKey(pid), ctx.folderId);
-  if (ctx.mode === 'site') await prefSet(containSiteKey(pid), ctx.siteUrl);
+  if (ctx.mode === 'site') {
+    await prefSet(containSiteKey(pid), ctx.siteUrl);
+    // v1.0.76 — the grain must be written BEFORE applyContainment/openLockedSite read it,
+    // or a fresh page lock would open with the host narrowing on its first frame.
+    await prefSet(containGrainKey(pid), ctx.siteGrain === 'prefix' ? 'prefix' : 'host');
+  }
   await prefSet(containUntilKey(pid), String(minutes > 0 ? Date.now() + minutes * 60000 : 0));
   await prefSet(CONTAIN_LAST_MIN, String(minutes)); // remembered for next time
   lockSetupCtx = null;
@@ -2200,6 +2212,16 @@ function siteHostLabel(url) {
   try { return new URL(url).host.replace(/^www\./, ''); } catch { return url || ''; }
 }
 
+/** v1.0.76 — a page lock's label: host + path, so the parent sees the exact prefix they are
+ *  pinning (the query/hash are dropped — they are not part of the locked prefix). */
+function sitePageLabel(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/+$/, '');
+    return u.host.replace(/^www\./, '') + path;
+  } catch { return url || ''; }
+}
+
 /**
  * Open the site the child is LOCKED into.
  *
@@ -2221,7 +2243,13 @@ async function openLockedSite(url) {
   // lock on a site that could never open. A lock the app CANNOT ENFORCE must not strand a
   // child (the v1.0.56 rule); containment errs strict everywhere except here.
   await loadSiteEntries();
-  const rules = rulesForLockedSite(siteRulePayload(), url);
+  // v1.0.76 — a PAGE lock ('prefix' grain, feature 4) narrows to the locked page's URL
+  // prefix; a SITE lock ('host', the v1.0.67 default) keeps the whole approved site. Both
+  // hand the native side an ordinary {host,port,segments} rule list — the prefix rule is
+  // simply longer-segmented, so no enforcement change is needed.
+  const rules = containState.siteGrain === 'prefix'
+    ? rulesForLockedPage(siteRulePayload(), url)
+    : rulesForLockedSite(siteRulePayload(), url);
   const release = async (why) => {
     await clearContainment();
     await refreshContainUi();
@@ -2257,21 +2285,41 @@ async function reopenForKid(url) {
  * Backing out REOPENS the site. Without that, tapping the padlock and changing your mind
  * would be a way out of the lock — the child would simply be left in the app.
  */
+/**
+ * v1.0.76 — the "whole site / just this page" question (user request, Q4). 'host' keeps the
+ * whole approved site (the v1.0.67 behaviour, the primary button — the safe default when a
+ * parent is unsure); 'prefix' locks the current page and its sub-pages. Pure `siteLockGrain`
+ * maps the answer; null = they backed out.
+ */
+async function askSiteGrain() {
+  return siteLockGrain(await askKid({
+    emoji: '🔒', title: 'איך לנעול?',
+    text: 'לאפשר לילד/ה לגלוש בכל האתר, או רק בדף הזה ובדפים שבתוכו?',
+    ok: 'כל האתר', third: 'רק הדף הזה', cancel: 'ביטול'
+  }));
+}
+
 async function onSiteLockTap() {
   if (!activeProfileId) return;
   const wasLocked = containState.active && containState.mode === 'site';
-  const url = wasLocked ? containState.siteUrl : lockCandidateSiteUrl;
+  // v1.0.76 — release/reopen use the ORIGINALLY locked page; a re-lock or a "dive in" uses
+  // the page the child is on NOW (lockCandidateSiteUrl), so locking deeper narrows the prefix.
+  const lockedUrl = wasLocked ? containState.siteUrl : null;
+  const hereUrl = lockCandidateSiteUrl;
   await closeSiteViewer().catch(() => {});
   siteViewerOpen = false;
-  let settled = false;   // onDone fires exactly once, for success AND for cancel
+  // ⚠️ onDone is driven by the SUCCESS BOOLEAN, not a `settled` flag: consumePinDone(true)
+  // fires onDone BEFORE pinOnSuccess runs, so a flag set inside onSuccess is still false when
+  // onDone reads it — it would reopen the site on success too. onDone(false) = the parent
+  // backed out of the code, and only then is the child put back where they were browsing.
   if (wasLocked) {
     startPin((await hasPin()) ? 'verify' : 'setup', {
       title: 'קוד הורים',
       onSuccess: async () => {
-        settled = true;
         if (nav.isActive('pin')) nav.back();
-        // v1.0.76 — release OR re-lock with a fresh duration (the same fix as onLockTap: the
-        // release-only branch meant the "how long?" dialog could never appear a second time).
+        // release OR re-lock with a fresh duration (the feature-3 fix). A re-lock also asks
+        // the grain again, so a parent can "dive in": navigate deeper, then re-lock onto the
+        // narrower page (the user's decision 2026-09-06).
         const choice = relockChoice(await askKid({
           emoji: '🔒', title: 'כבר יש נעילה',
           text: 'לשחרר את הנעילה, או לנעול מחדש עם זמן חדש?',
@@ -2283,28 +2331,35 @@ async function onSiteLockTap() {
           renderSitesView();
           await refreshContainUi();
           toast('הנעילה שוחררה 🔓');
-        } else if (choice === 'relock' && url) {
-          askLockDuration('site', null, url).catch(() => {});
-        } else if (url) {
+        } else if (choice === 'relock' && hereUrl && rulesForLockedSite(siteRulePayload(), hereUrl).length) {
+          const grain = await askSiteGrain();
+          if (grain) askLockDuration('site', null, hereUrl, grain).catch(() => {});
+          else if (lockedUrl) await openLockedSite(lockedUrl).catch(() => {}); // grain cancelled — back inside
+        } else if (lockedUrl) {
           // changed their mind — the child was inside the locked site, put them back
-          await openLockedSite(url).catch(() => {});
+          await openLockedSite(lockedUrl).catch(() => {});
         }
       },
-      onDone: () => { if (!settled && url) openLockedSite(url).catch(() => {}); }
+      onDone: (ok) => { if (!ok && lockedUrl) openLockedSite(lockedUrl).catch(() => {}); }
     });
     return;
   }
-  if (!url || !rulesForLockedSite(siteRulePayload(), url).length) {
+  if (!hereUrl || !rulesForLockedSite(siteRulePayload(), hereUrl).length) {
     toast('אי אפשר לנעול על הדף הזה');
-    if (url) await openLockedSiteOrPlain(url);
+    if (hereUrl) await openLockedSiteOrPlain(hereUrl);
     return;
   }
   startPin((await hasPin()) ? 'verify' : 'setup', {
     title: 'קוד הורים לנעילה על האתר',
-    onSuccess: () => { settled = true; askLockDuration('site', null, url).catch(() => {}); },
-    // the parent backed out of the code screen, or out of the duration dialog: the child
-    // was browsing a moment ago and must be put back where they were
-    onDone: () => { if (!settled) openLockedSiteOrPlain(url).catch(() => {}); }
+    onSuccess: async () => {
+      if (nav.isActive('pin')) nav.back();
+      // v1.0.76 — whole site or just this page? (feature 4)
+      const grain = await askSiteGrain();
+      if (grain) askLockDuration('site', null, hereUrl, grain).catch(() => {});
+      else await openLockedSiteOrPlain(hereUrl).catch(() => {}); // backed out — reopen as it was
+    },
+    // the parent backed out of the code screen: the child was browsing a moment ago
+    onDone: (ok) => { if (!ok) openLockedSiteOrPlain(hereUrl).catch(() => {}); }
   });
 }
 

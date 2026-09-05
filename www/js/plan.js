@@ -2902,8 +2902,8 @@ export const CONTAIN_MODES = ['app', 'folder', 'sites', 'site'];
  *    still contains them.
  * -> { active, mode, folderId, msLeft, expired }
  */
-export function evalContainment({ now = Date.now(), mode = null, folderId = null, siteUrl = null, until = 0 } = {}) {
-  const off = { active: false, mode: null, folderId: null, siteUrl: null, msLeft: 0, expired: false };
+export function evalContainment({ now = Date.now(), mode = null, folderId = null, siteUrl = null, siteGrain = null, until = 0 } = {}) {
+  const off = { active: false, mode: null, folderId: null, siteUrl: null, siteGrain: null, msLeft: 0, expired: false };
   const m = CONTAIN_MODES.includes(mode) ? mode : null;
   if (!m) return off;
   const fid = typeof folderId === 'string' && folderId ? folderId : null;
@@ -2914,8 +2914,13 @@ export function evalContainment({ now = Date.now(), mode = null, folderId = null
   if (m === 'site' && !su) return off;
   const u = Number(until) || 0;
   if (u > 0 && now >= u) return { ...off, expired: true };
+  // v1.0.76 — a 'site' lock has a GRAIN: 'prefix' holds the child on the locked page's URL
+  // prefix (feature 4), 'host' (the default, and the v1.0.67 behaviour) on the whole site.
+  // Any value but 'prefix' reads as 'host' — an unwritten or corrupted grain must fall back
+  // to the WIDER, already-shipped behaviour, never silently pin a child onto one page.
+  const grain = m === 'site' ? (siteGrain === 'prefix' ? 'prefix' : 'host') : null;
   return { active: true, mode: m, folderId: m === 'folder' ? fid : null,
-    siteUrl: m === 'site' ? su : null, msLeft: u > 0 ? u - now : 0, expired: false };
+    siteUrl: m === 'site' ? su : null, siteGrain: grain, msLeft: u > 0 ? u - now : 0, expired: false };
 }
 
 /**
@@ -2970,6 +2975,23 @@ export function relockChoice(answer) {
 }
 
 /**
+ * v1.0.76 — PURE: which GRAIN of site lock the parent chose (user request: "כל האתר / רק
+ * הדף"). A site lock holds the child on the whole approved SITE (host); a page lock holds
+ * them on ONE page's URL-prefix and its sub-pages. 'ok' (the primary button) = the whole
+ * site — the v1.0.67 behaviour, the safe default when a parent is unsure; 'third' = just
+ * this page (the prefix); anything else = they backed out, engage nothing.
+ *
+ * Returns the `siteGrain` value stored on the lock: 'host' | 'prefix' | null. Pinning the
+ * mapping here stops a silent inversion (locking a child onto one page when the parent meant
+ * the whole site, or vice versa).
+ */
+export function siteLockGrain(answer) {
+  if (answer === 'ok') return 'host';
+  if (answer === 'third') return 'prefix';
+  return null;
+}
+
+/**
  * PURE: minutes for a new lock. 0 is a real answer ("until I unlock it"), so it must
  * survive; anything unusable falls back to the remembered value and then to 0 — the
  * planRejectedPurge rule (a typo must never invent a short lock the parent did not ask
@@ -2995,14 +3017,30 @@ export function normalizeLockMinutes(value, fallback = 0) {
   return 0;
 }
 
-/** PURE: the sentence under the padlock dialog — it must say what the child will lose. */
-export function containConfirmText({ mode = 'app', folderTitle = '', minutes = 0 } = {}) {
-  const what = mode === 'folder'
-    ? `הילד/ה יוכל/תוכל לצפות רק בתיקיה "${folderTitle || 'הנוכחית'}"`
-    : 'הילד/ה יוכל/תוכל לצפות בכל התיקיות';
+/**
+ * PURE: the sentence under the padlock dialog — it must say what the child will lose.
+ *
+ * v1.0.76 — a site lock now has two grains: 'host' holds the child on the whole approved
+ * site, 'prefix' (a page lock, feature 4) on the locked page and its sub-pages. `siteLabel`
+ * is the human name of the site/page, shown so the parent knows exactly what they are pinning.
+ */
+export function containConfirmText({ mode = 'app', folderTitle = '', minutes = 0, siteGrain = 'host', siteLabel = '' } = {}) {
+  let what;
+  if (mode === 'folder') {
+    what = `הילד/ה יוכל/תוכל לצפות רק בתיקיה "${folderTitle || 'הנוכחית'}"`;
+  } else if (mode === 'site') {
+    what = siteGrain === 'prefix'
+      ? `הילד/ה יוכל/תוכל לגלוש רק בדף ${siteLabel || 'הזה'} ובדפים שבתוכו`
+      : `הילד/ה יוכל/תוכל לגלוש רק באתר ${siteLabel || 'הזה'}`;
+  } else if (mode === 'sites') {
+    what = 'הילד/ה יוכל/תוכל לגלוש רק באתרים המאושרים';
+  } else {
+    what = 'הילד/ה יוכל/תוכל לצפות בכל התיקיות';
+  }
   const how = minutes > 0
     ? `הנעילה תשתחרר לבד אחרי ${minutes} דקות, או קודם עם קוד ההורים.`
     : 'הנעילה תישאר עד שתשחררו אותה עם קוד ההורים.';
+  // a site/page lock does not hide the folders, but it DOES prevent leaving the app
   return `${what}, ולא תהיה אפשרות לצאת מהאפליקציה או להחליף פרופיל. ${how}`;
 }
 
