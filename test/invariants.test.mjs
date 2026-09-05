@@ -42,7 +42,16 @@ const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
  * than no guard: it trains you to edit the test until it passes.
  */
 function appPauseBody(app) {
-  const at = app.indexOf('onAppPause(() => {');
+  return handlerBody(app, 'onAppPause(() => {');
+}
+
+/** v1.0.76 — the same brace-balanced extraction for ANY `name(() => { … })` registration.
+ *  ⚠️ Added because a 700-char window from `onPipHidden(` was proven VACUOUS by its own
+ *  plant: with comments stripped the window reached INTO the neighbouring onAppPause and
+ *  matched that handler's backgroundPlayDecision. A window into app.js is a guess about
+ *  distance; a balanced body is not. */
+function handlerBody(app, anchor) {
+  const at = app.indexOf(anchor);
   if (at < 0) return null;
   let i = app.indexOf('{', at);
   const start = i + 1;
@@ -4426,9 +4435,10 @@ test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding
   //    appStateChange fires (the activity already paused at PiP entry), so onPipHidden
   //    must save FIRST (the live playhead), consult the bgPlay decision, and pause IN
   //    PLACE — never stop() (the "הסרטון נעלם" class).
-  const hiddenAt = app.indexOf('onPipHidden(');
-  assert.ok(hiddenAt > 0, 'nothing listens for the PiP window going away — X leaves the video playing blind');
-  const hidden = app.slice(hiddenAt, hiddenAt + 700);
+  // brace-balanced, NOT a char window: the window version reached into the neighbouring
+  // onAppPause and stayed green with the bgPlay consult deleted (proven by its own plant)
+  const hidden = handlerBody(app, 'onPipHidden(');
+  assert.ok(hidden, 'nothing listens for the PiP window going away — X leaves the video playing blind');
   const hSave = hidden.indexOf('saveWatchPosition(currentWatch');
   const hPause = hidden.indexOf('pauseCurrent()');
   assert.ok(hSave >= 0, 'the PiP-hidden door no longer banks the stop point');
@@ -4448,10 +4458,19 @@ test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding
     'an unreadable kiosk setting must read as STRICT (kiosk on), never as "no kiosk"');
   // …and the push points exist: a video opening, the player reporting play/pause, the
   // watch view leaving. Each is a moment the pushed answer changes.
-  assert.match(fnSlice(app, 'async function openWatch('), /refreshPipState\(/,
+  // ⚠️ anchored to the arm call, NOT the whole function: openWatch also carries the
+  // onPlayState callback (which mentions refreshPipState), so a whole-function match was
+  // proven VACUOUS by its own plant — it stayed green with the direct call deleted.
+  assert.match(fnSlice(app, 'async function openWatch('), /armBackgroundPlayback\(item\)[\s\S]{0,320}?refreshPipState\(/,
     'opening a video no longer refreshes the pushed PiP state');
   assert.match(app, /onPlayState: \(playing\) => \{ republishBackgroundState\(playing\)\.catch\(\(\) => \{\}\); refreshPipState\(\)/,
     'a play/pause no longer refreshes the PiP state — the window ⏯ icon and auto-enter go stale');
+  // …and BOTH engines report. The file engine has since v1.0.74 (its own guard); the YT
+  // engine reports through `cb` — NEVER `opts`, which reuse() swaps away, so `opts` would
+  // report into the PREVIOUS video's callbacks. Without this, eligibility and the ⏯ icon
+  // go stale on every YouTube video — half the library. (Proven red by its own plant.)
+  assert.match(CODE.get('www/js/player.js'), /cb\.onPlayState\(e\.data === YT\.PlayerState\.PLAYING\)/,
+    'the YouTube engine no longer reports play/pause — PiP goes stale on YouTube videos');
   const watchLeave = app.slice(app.indexOf("nav.register('watch'"), app.indexOf("nav.register('watch'") + 2600);
   assert.match(watchLeave, /pipTrack = null/, 'a left watch view keeps a stale ⏮/⏭ track');
   assert.match(watchLeave, /refreshPipState\(/, 'leaving the watch view leaves PiP armed for a dead video');
