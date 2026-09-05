@@ -834,6 +834,15 @@
           <span>להמשיך להשמיע כשהמסך כבוי או שיצאנו מהאפליקציה<b id="bgplay-owner" class="setting-owner"></b>
             <small class="setting-hint">רק קבצי שמע ווידאו שלכם — לא סרטוני יוטיוב. תופיע הודעה עם כפתורי ניגון/הקודם/הבא. שימו לב: אנדרואיד לא מבדילה בין כפתור כיבוי המסך לכפתור הבית, אז גם יציאה לבית תמשיך להשמיע.</small></span>
         </label>
+        <!-- v1.0.76: picture-in-picture. OFF by default; hidden (JS) when the device cannot
+             PiP at all (pre-8 Android, TV). The hint names the two things a parent must
+             know: the floating window sits OVER the home screen (i.e. HOME becomes a real
+             door out of the app), and every parental lock switches PiP off. -->
+        <label class="switch-row" id="pip-row">
+          <input id="pip-toggle" type="checkbox" />
+          <span>מסך קטן: כפתור הבית מקטין את הסרטון לחלון צף במקום לעצור אותו<b id="pip-owner" class="setting-owner"></b>
+            <small class="setting-hint">כמו ביוטיוב: הסרטון ממשיך בריבוע קטן מעל מסך הבית, עם כפתורי הקודם/ניגון/הבא, X לסגירה והקשה כפולה להגדלה. עובד גם על יוטיוב וגם על קבצים. שימו לב: החלון הצף מרחף מעל מסך הבית של הטאבלט — ולכן בזמן נעילת הורים, נעילת יציאה או הפסקה מתוזמנת הוא כבוי. דורש אנדרואיד 8 ומעלה.</small></span>
+        </label>
         <!-- v1.0.11: OS screen-pinning kiosk — exiting requires the parent PIN -->
         <label class="switch-row">
           <input id="exit-lock-toggle" type="checkbox" />

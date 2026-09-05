@@ -232,6 +232,61 @@ export function backgroundPlayDecision({ enabled = false, playing = false, item 
   return { play: true, why: 'ok' };
 }
 
+/**
+ * v1.0.76 — PURE: may the HOME button shrink this session into a Picture-in-Picture
+ * window? The answer is PUSHED to the native side ahead of time (`setPipState`) because
+ * `onUserLeaveHint` is synchronous — the same cached-decision shape as `bgPlayEnabled`.
+ *
+ * Unlike backgroundPlayDecision, YOUTUBE IS INCLUDED (user decision 2026-09-06): in PiP
+ * the activity stays VISIBLE, so the WebView is never throttled or evicted — the reason
+ * YouTube is excluded from background playback does not apply here.
+ *
+ * ⚠️ EVERY LOCK REFUSES PiP, and that is the safety half of this feature: a PiP window
+ * floats over the LAUNCHER, i.e. pressing HOME with PiP armed walks the child out of the
+ * app with the video in tow. Under the kiosk (exitLock), any containment lock, or a
+ * scheduled break, that is exactly the door those locks exist to close. (Android itself
+ * also refuses PiP in lock-task mode — the native side re-checks `inLockTask` — but the
+ * kiosk flag must refuse here too: the OS pin can fail while the setting stands.)
+ *
+ * `playing` is required, like YouTube's own app: HOME on a paused video backgrounds
+ * normally — a frozen frame floating over the launcher is clutter, not playback.
+ */
+export function pipEligibility({
+  enabled = false, supported = false, tv = false, watching = false,
+  playing = false, item = null, kiosk = false, contained = false
+} = {}) {
+  if (!supported || tv) return { eligible: false, why: 'unsupported' };
+  if (!enabled) return { eligible: false, why: 'off' };
+  if (kiosk || contained) return { eligible: false, why: 'locked' };
+  if (!watching || !item) return { eligible: false, why: 'no-video' };
+  if (!playing) return { eligible: false, why: 'paused' };
+  return { eligible: true, why: 'ok' };
+}
+
+/**
+ * v1.0.76 — PURE: which video does the PiP window's ⏮/⏭ land on?
+ *
+ * `keys` is the FROZEN grid order (built once from pageAnyFolder, THE pagination entry
+ * point — the v1.0.63 precedent, so the window can never disagree with the grid under the
+ * player). A WRAPPED GIFT IS SKIPPED, NEVER OPENED: its whole ritual is that the first TAP
+ * unwraps it and deliberately does not play (v1.0.25), so starting it from a floating
+ * window would consume the video while leaving the tile wrapped forever. NO WRAP-AROUND —
+ * a chain that loops would play all night; past either end the answer is null and the
+ * button does nothing.
+ */
+export function pipSkipTarget({ keys = [], currentKey = null, dir = 1, isGift = () => false } = {}) {
+  const list = Array.isArray(keys) ? keys : [];
+  const i = list.indexOf(currentKey);
+  if (i < 0) return null;
+  const step = dir < 0 ? -1 : 1;
+  for (let j = i + step; j >= 0 && j < list.length; j += step) {
+    let gift = false;
+    try { gift = !!isGift(list[j]); } catch { gift = true; } // unknown ⇒ skip, never open
+    if (!gift) return list[j];
+  }
+  return null;
+}
+
 
 export function planAutoplay({
   enabled = false, folderId = null, reason = 'ended',

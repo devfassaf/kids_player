@@ -238,6 +238,28 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Picture-in-picture (v1.0.76 — the browser proved the JS with a stubbed bridge; these are
+### the parts only a real device can answer, and the whole feature is device-only)
+- [ ] **The window itself**: enable "מסך קטן" for one child, play a video (a file AND a
+      YouTube one), press HOME → the video shrinks into a floating window instead of pausing,
+      and keeps playing. Pressing HOME on a PAUSED video backgrounds normally (no window).
+- [ ] **YouTube keeps playing in the window** — the one thing the excluded-from-bgPlay
+      rationale said it could not do off-screen; here the activity is visible, so it must.
+- [ ] **The three buttons**: ⏮/⏭ change track (grid order, no wrap at either end), ⏯ pauses
+      and resumes, and the ⏯ icon matches the real state. A wrapped 🎁 in the grid is
+      SKIPPED, not opened.
+- [ ] **The X** dismisses the window → the video pauses in place and banks its spot (reopen
+      the app, the same video is waiting where it stopped). With background playback ALSO on
+      for an audio file, the X leaves the sound going (that is bgPlay's job, not PiP's).
+- [ ] **The event order** (the one link no browser can prove): entering PiP must NOT pause
+      the video — if it pauses the instant it shrinks, `pipChanged` is arriving after the
+      onPause instead of before it.
+- [ ] **Every lock refuses it**: with the kiosk exit-lock on, OR a folder/sites/site
+      containment lock engaged, OR during a scheduled break, pressing HOME must NOT float a
+      window — it backgrounds (or the lock holds) as before. This is the safety property.
+- [ ] **Not on TV / old Android**: the "מסך קטן" row is hidden on a device that cannot PiP
+      (pre-8) and on Android TV.
+
 ### Search inside a folder (v1.0.58 — the browser proved the scoping; these need a device)
 - [ ] **TV**: the 🔍 in the folder header is reachable with the D-pad, and typing works with
       the remote (the folder header now has four controls — check none is unreachable).
