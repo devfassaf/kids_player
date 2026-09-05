@@ -302,6 +302,47 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     second lock now opens the duration dialog pre-filled with the remembered value, re-lock
     engaged a new 45-min timer, release still cleared the lock, and a fresh lock still asked.
 
+- v1.0.76 — **THE PARENT CAN LOCK A CHILD ONTO ONE PAGE'S URL-PREFIX, AND DIVE DEEPER**
+  (user request: "לנעול דף ספציפי … הילד יוכל לגלוש בכל הכתובות עם התחילית … ולצלול פנימה
+  ולשמור תתי-דפים").
+  - **A PAGE LOCK IS A SITE LOCK, JUST NARROWER** — so it is a `siteGrain` FLAG on the
+    existing 'site' mode, not a new mode. That one decision keeps every `mode === 'site'`
+    check (the chrome, the boot reopen, the wasLocked branch, the exit/back handling)
+    untouched: only the rule-narrowing reads the grain. `'host'` (the v1.0.67 behaviour, and
+    the safe default) keeps the whole approved site; `'prefix'` keeps the locked page and its
+    sub-pages.
+  - **THE NARROWING IS PURE `weblock.rulesForLockedPage`**, the narrower sibling of
+    `rulesForLockedSite`: it keeps ONE synthetic rule — the locked page's full path — so the
+    child may navigate only to that prefix and DEEPER. ⚠️ **IT CAN ONLY NARROW, NEVER
+    GRANT**: `matchRule` guarantees the governing rule's segments are a PREFIX of the page's,
+    so the synthetic rule (the page's full segments) is a SUBSET of what the child could
+    already reach. Comparison stays BY SEGMENT (`/abc/1/efg` never admits `/abc/1/efgX`), and
+    it inherits the governing rule's `allowExternal`. An unmatched page yields `[]` → the
+    caller refuses to engage (fail strict).
+  - **NO JAVA CHANGE**: a prefix rule is just a longer-segment `{host,port,segments}` rule,
+    and the native side already compares by segment. `openLockedSite` picks the narrowing by
+    `containState.siteGrain` and hands over the result exactly as before.
+  - **THE 🔒 ASKS THE GRAIN** (`plan.siteLockGrain`, user decision 2026-09-06): after the
+    code, "כל האתר / רק הדף הזה". 'ok' = whole site (the primary button, the safe default),
+    'third' = this page, else = backed out. **DIVING IN** rides feature 3's re-lock: navigate
+    deeper inside the locked prefix, tap 🔒 → re-lock on the CURRENT page (`lockCandidateSiteUrl`,
+    not the originally-locked one) → a narrower prefix. The grain is PERSISTED
+    (`contain:<pid>:sitegrain`) so a page lock survives a restart as a page lock, and
+    `evalContainment` defaults any unwritten/corrupted grain to `'host'` — the wider,
+    already-shipped behaviour, never silently pinning a child onto one page.
+  - ⚠️ **AND IT FIXES A LATENT v1.0.67 onDone BUG.** `onSiteLockTap`'s onDone used
+    `if (!settled …)`, but `consumePinDone(true)` fires onDone BEFORE `pinOnSuccess` runs, so
+    `settled` was still false on success and the site was reopened on TOP of the duration
+    dialog. onDone now reads the SUCCESS BOOLEAN it is passed (`(ok) => { if (!ok) … }`), the
+    pattern the share flow already used — reopen only on a real cancel.
+  - 6 unit tests (`rulesForLockedPage` × 3, `siteLockGrain`, `evalContainment` grain, the
+    page/site confirm text) + 1 invariants guard, every guard proven red on a planted
+    regression (6). Browser-verified end to end through the real PIN gate with a stubbed
+    viewer: the grain dialog, a page lock storing `prefix` and reopening with rules narrowed
+    to `['abc','1','efg']` (sub-pages allowed, siblings/root/`efgX` blocked), a whole-site
+    lock storing `host` with segments `[]`, and release from a page lock. **The site viewer
+    itself is a DEVICE checklist item.**
+
 - v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
   שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
   - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY
