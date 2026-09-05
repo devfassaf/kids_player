@@ -2484,6 +2484,21 @@ const JAVA_PAIRS = [
   'android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java',
   'native-reference/KidsWebPlugin.java'
 ];
+
+/** v1.0.76 — a Java method's body, brace-balanced from the first `{` at/after `at`. The
+ *  Java twin of handlerBody: a fixed char window bleeds into the next method and passes on
+ *  a deleted call (proven — the onPageFinished plant). */
+function javaMethodBody(src, at) {
+  let i = src.indexOf('{', at);
+  if (i < 0) return '';
+  const start = i;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (!depth) return src.slice(start, i + 1); }
+  }
+  return src.slice(start);
+}
 const readRepo = (p) => readFileSync(join(ROOT, p), 'utf8');
 /** Java source with comments stripped. Every positional/absence guard below MUST use
  *  this: the comments deliberately NAME what they forbid ("verifying a PIN in Java
@@ -2847,7 +2862,10 @@ test('the site viewer has browser back/forward, greyed when dead, in BOTH java c
     for (const hook of ['onPageStarted', 'onPageFinished', 'doUpdateVisitedHistory']) {
       const at = body.indexOf('public void ' + hook + '(');
       assert.ok(at > 0, `${p}: ${hook} is gone — re-anchor this guard`);
-      assert.match(body.slice(at, at + 260), /updateNavButtons\(\)/,
+      // ⚠️ BRACE-BALANCED, not a char window: a fixed window from onPageFinished( bled into
+      // the NEXT hook (which also calls updateNavButtons) and stayed green with this hook's
+      // call deleted — the handlerBody trap, a third time.
+      assert.match(javaMethodBody(body, at), /updateNavButtons\(\)/,
         `${p}: ${hook} does not refresh the nav buttons — a stale/dead arrow`);
     }
     // the fields are cleared on teardown (the overlay is rebuilt on the next open), like
