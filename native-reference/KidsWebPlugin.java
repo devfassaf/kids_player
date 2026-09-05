@@ -72,6 +72,11 @@ public class KidsWebPlugin extends Plugin {
     private FrameLayout overlay;
     private WebView web;
     private TextView titleView;
+    // v1.0.76 — the browser's own back/forward buttons (user request). Fields, not locals,
+    // because their enabled state is refreshed from the history hooks below; nulled in
+    // forceClose alongside titleView.
+    private Button navBack;
+    private Button navFwd;
     /**
      * ⚠️ THESE THREE ARE READ FROM A BACKGROUND THREAD.
      *
@@ -352,7 +357,23 @@ public class KidsWebPlugin extends Plugin {
             tag.setTextColor(Color.WHITE);
             bar.addView(tag);
         }
+
+        // v1.0.76 — BROWSER BACK / FORWARD (user request), at the visual LEFT: added LAST, so
+        // in the RTL bar they sit at the far-left corner opposite the 🏠 pill. The glyphs are
+        // the app's own pager convention (ui/pager.js): ▶ = "previous" (back), ◀ = "next"
+        // (forward) — mirrored for RTL, so a child meets ONE arrow language across the app.
+        //
+        // ⚠️ NOT A HOLE IN THE SAFETY BOUNDARY: goBack()/goForward() only ever reach history
+        // entries that were ALREADY vetted by shouldOverrideUrlLoading when first loaded (and
+        // a site lock rebuilds the overlay, so its history holds only in-lock pages). History
+        // navigation does not re-run the URL filter, and it does not need to.
+        navBack = navButton(a, "▶", "הקודם", () -> { if (web != null && web.canGoBack()) { web.goBack(); } });
+        navFwd = navButton(a, "◀", "הבא", () -> { if (web != null && web.canGoForward()) { web.goForward(); } });
+        bar.addView(navBack);
+        bar.addView(navFwd);
+
         col.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        updateNavButtons(); // start disabled — a fresh page can go neither way
 
         // A SUBCLASS, so the text-selection ActionMode can be refused: selecting a word
         // offers "Web search" and "Translate", and both launch another app — the same
@@ -406,6 +427,37 @@ public class KidsWebPlugin extends Plugin {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
+    /** v1.0.76 — one small round bar button (▶/◀). A child's finger, not a cursor. */
+    private Button navButton(Activity a, String glyph, String label, Runnable onTap) {
+        Button b = new Button(a);
+        b.setText(glyph);
+        b.setAllCaps(false);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f);
+        b.setTextColor(Color.WHITE);
+        b.setBackgroundColor(Color.TRANSPARENT);
+        b.setPadding(dp(a, 10), dp(a, 6), dp(a, 10), dp(a, 6));
+        b.setMinimumWidth(dp(a, 48));
+        b.setMinimumHeight(dp(a, 48));
+        b.setContentDescription(label);
+        b.setOnClickListener(v -> onTap.run());
+        return b;
+    }
+
+    /**
+     * v1.0.76 — grey a nav button the WebView cannot honour, so a child does not tap a dead
+     * arrow. Called from open() and from EVERY history hook (onPageStarted /
+     * doUpdateVisitedHistory / onPageFinished) — a same-document pushState changes what
+     * canGoBack answers without an onPageStarted. UI thread only (that is where all three
+     * hooks and open() run), because canGoBack/canGoForward are UI-thread methods.
+     */
+    private void updateNavButtons() {
+        if (web == null) return;
+        boolean back = web.canGoBack();
+        boolean fwd = web.canGoForward();
+        if (navBack != null) { navBack.setEnabled(back); navBack.setAlpha(back ? 1f : 0.35f); }
+        if (navFwd != null) { navFwd.setEnabled(fwd); navFwd.setAlpha(fwd ? 1f : 0.35f); }
+    }
+
     /** The child asked to leave. Under a site lock, that is the one thing they may not do. */
     private void closeOverlay() {
         if (childLocked) { notifyListeners("webLockRequest", new JSObject()); return; }
@@ -428,6 +480,8 @@ public class KidsWebPlugin extends Plugin {
         overlay = null;
         web = null;
         titleView = null;
+        navBack = null;
+        navFwd = null;
         currentPageUrl = "";
         notifyListeners("webClosed", new JSObject());
     }
@@ -468,12 +522,19 @@ public class KidsWebPlugin extends Plugin {
         public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
             currentPageUrl = url;   // UI thread — the background reader only ever reads it
             pingActivity();
+            updateNavButtons();     // v1.0.76
+        }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            updateNavButtons();     // v1.0.76 — canGoForward flips to false once a new nav commits
         }
 
         /** Also fires for same-document navigations (pushState), which onPageStarted misses. */
         @Override
         public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
             currentPageUrl = url;
+            updateNavButtons();     // v1.0.76 — a pushState changes canGoBack with no onPageStarted
         }
     }
 

@@ -230,3 +230,10 @@ export const AVATARS = [
  *  title and icon. The address is still addable; only the niceties are skipped. Without
  *  a bound a hanging host leaves the parent on "בודקים את הכתובת…" with no way out. */
 export const SITE_PROBE_TIMEOUT_MS = 8000;
+
+/** v1.0.76 — the most tiles the PiP window's ⏮/⏭ track walks (one pageAnyFolder read,
+ *  built lazily on PiP entry). The v1.0.63 BG_TRACK_MAX precedent: the track is the ORDER
+ *  THE CHILD IS LOOKING AT, frozen once, and a floating window does not need more than a
+ *  couple of hundred reachable tiles — an unbounded read is a whole-library deserialize
+ *  on a low-end tablet. */
+export const PIP_TRACK_MAX = 200;

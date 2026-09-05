@@ -13,6 +13,7 @@ package com.assaf.kidsplayer;
 //      onShowCustomView is a no-op) and blocks pop-up windows.
 
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Message;
@@ -104,6 +105,35 @@ public class MainActivity extends BridgeActivity {
     public void onResume() {
         super.onResume();
         KidsWebPlugin.onActivityResume();
+        KidsNativePlugin.onPipActivityResumed(); // v1.0.76: an EXPAND is not a dismissal
+    }
+
+    /* ---------------- picture-in-picture (v1.0.76) ----------------
+       All four hooks forward to KidsNativePlugin, so the logic (and its comments) live in
+       ONE file across both java copies. JS pushes eligibility ahead of time — this hint is
+       synchronous and cannot ask the bridge. */
+
+    /** The HOME press on API 26–30 / 3-button nav (on 31+ auto-enter handles the gesture). */
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        KidsNativePlugin.maybeEnterPip(this);
+    }
+
+    /** Fires BEFORE the onPause PiP entry causes — the order the JS pause handler relies on. */
+    @Override
+    public void onPictureInPictureModeChanged(boolean isInPictureInPictureMode, Configuration newConfig) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig);
+        KidsNativePlugin.onPipModeChanged(this, isInPictureInPictureMode);
+    }
+
+    /** A PiP window dismissed with its X, or the screen turning off over it, lands here —
+        with NO appStateChange (the activity already paused at PiP entry), so the plugin
+        tells JS to bank the playhead and fall silent. */
+    @Override
+    public void onStop() {
+        KidsNativePlugin.onPipActivityStopped();
+        super.onStop();
     }
 
     // F12b share target. VERIFIED: BridgeActivity.load() ends with

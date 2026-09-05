@@ -238,6 +238,28 @@ for anything destructive, and purge it afterwards.
 - [ ] Idle screen-off on TV: same flow with the remote untouched; after the pause the
       TV's own screensaver/sleep takes over (the app cannot power a panel down).
 
+### Picture-in-picture (v1.0.76 — the browser proved the JS with a stubbed bridge; these are
+### the parts only a real device can answer, and the whole feature is device-only)
+- [ ] **The window itself**: enable "מסך קטן" for one child, play a video (a file AND a
+      YouTube one), press HOME → the video shrinks into a floating window instead of pausing,
+      and keeps playing. Pressing HOME on a PAUSED video backgrounds normally (no window).
+- [ ] **YouTube keeps playing in the window** — the one thing the excluded-from-bgPlay
+      rationale said it could not do off-screen; here the activity is visible, so it must.
+- [ ] **The three buttons**: ⏮/⏭ change track (grid order, no wrap at either end), ⏯ pauses
+      and resumes, and the ⏯ icon matches the real state. A wrapped 🎁 in the grid is
+      SKIPPED, not opened.
+- [ ] **The X** dismisses the window → the video pauses in place and banks its spot (reopen
+      the app, the same video is waiting where it stopped). With background playback ALSO on
+      for an audio file, the X leaves the sound going (that is bgPlay's job, not PiP's).
+- [ ] **The event order** (the one link no browser can prove): entering PiP must NOT pause
+      the video — if it pauses the instant it shrinks, `pipChanged` is arriving after the
+      onPause instead of before it.
+- [ ] **Every lock refuses it**: with the kiosk exit-lock on, OR a folder/sites/site
+      containment lock engaged, OR during a scheduled break, pressing HOME must NOT float a
+      window — it backgrounds (or the lock holds) as before. This is the safety property.
+- [ ] **Not on TV / old Android**: the "מסך קטן" row is hidden on a device that cannot PiP
+      (pre-8) and on Android TV.
+
 ### Search inside a folder (v1.0.58 — the browser proved the scoping; these need a device)
 - [ ] **TV**: the 🔍 in the folder header is reachable with the D-pad, and typing works with
       the remote (the folder header now has four controls — check none is unreachable).
@@ -414,6 +436,8 @@ for anything destructive, and purge it afterwards.
 | ערוצים חדשים (v1.0.32) | Plant a `libraryChannels` row with `addedAt: Date.now()`, no `decidedAt` → it renders in the new section with the ⚙️ button; answering the dialog (or an empty queue tap) stamps `decidedAt` and moves it. `planChannelSections` covers the clock-skew and legacy-row rules. |
 | Logo byte cache (v1.0.32) | After one online render: the folder `<img>` src starts with `blob:` and `performance.getEntriesByType('resource')` shows ZERO new ggpht requests on re-render. The two traps are pinned pure: `logoFirstPaint` (warm memory never touches the network) and `planLogoDelivery` (a late fetch may not paint into a host that moved on — `#folder-logo-top` is shared). |
 | Website locks (v1.0.67) | Browser covers the SITES lock (engage, 🏠 refusing, back swallowed, relaunch landing, release). **The SITE lock is DEVICE-ONLY** — the viewer is a native overlay. On a device: open a site, tap 🔒 in its bar, enter the code, choose a duration → the bar's button becomes 🔒 הורים, hardware back walks the site's history and then STOPS, and a link to another approved site is blocked. Tap 🔒 and cancel → the site must REOPEN, not leave the child in the app. Force-close and relaunch → the site reopens. ⚠️ A scheduled break must still close the viewer, and deleting the site in the parent screen must release the lock. |
+| Browser back/forward (v1.0.76) | **DEVICE ONLY** — the viewer is a native overlay. Open a site, follow a couple of links: the ▶/◀ buttons at the LEFT of the bar must go back and forward through the pages, and each must be GREYED when there is nowhere to go (▶ on the very first page, ◀ until you have gone back). Going back must never reach a page the site was not allowed to show. Check both child mode and parent mode. |
+| Page-prefix lock (v1.0.76) | **DEVICE ONLY** — the viewer is native. Open a site, tap 🔒, enter the code → the "כל האתר / רק הדף הזה" question appears. Choose **רק הדף הזה**: the child may then follow links UNDER that page (`/abc/1/efg/…`) but a link to a SIBLING section (`/other`) or the site root must be blocked. Choose **כל האתר**: the whole approved site stays reachable (the v1.0.67 behaviour). **Dive in**: while page-locked, navigate deeper, tap 🔒 → נעילה מחדש → רק הדף הזה → the lock narrows to the deeper prefix. Force-close and relaunch → it reopens page-locked. ⚠️ Also confirm re-lock on an ALREADY-locked site shows the release/re-lock choice (feature 3) and never reopens the site on top of the duration dialog. |
 | Swipe smoothness (v1.0.75) | Swipe through a multi-page folder: the page must NEVER flash the one you left after the turn completes. ⚠️ Sampling on a timer will not catch this — the window is shorter than a frame. Use a MutationObserver on the grid's `style` (it fires before paint) and assert zero frames where transform is 0, the ghost is gone, and the grid still holds the old first tile. |
 | Lock-screen state (v1.0.74) | **DEVICE ONLY.** Play a song, pause it FROM THE SCREEN, then open the lock screen: the widget must show ▶ (play), not ⏸. Same after a track ENDS — the notification should be gone entirely. ⚠️ The bug was that the state was published only when the notification's own buttons were pressed, so any other pause left it claiming the track was still running. |
 | Call resume (v1.0.72) | **DEVICE ONLY.** Two cases, and the second is the regression: (a) play a song, take a call → it must pause and RESUME when the call ends; (b) **pause the song yourself**, wait, then take a call → when the call ends it must stay PAUSED. Case (b) was the bug: the lifecycle door checked it, the poll did not, and the poll is the path a modern heads-up call actually takes. |

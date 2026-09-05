@@ -42,7 +42,16 @@ const CODE = new Map([...MODULES].map(([k, v]) => [k, stripComments(v)]));
  * than no guard: it trains you to edit the test until it passes.
  */
 function appPauseBody(app) {
-  const at = app.indexOf('onAppPause(() => {');
+  return handlerBody(app, 'onAppPause(() => {');
+}
+
+/** v1.0.76 — the same brace-balanced extraction for ANY `name(() => { … })` registration.
+ *  ⚠️ Added because a 700-char window from `onPipHidden(` was proven VACUOUS by its own
+ *  plant: with comments stripped the window reached INTO the neighbouring onAppPause and
+ *  matched that handler's backgroundPlayDecision. A window into app.js is a guess about
+ *  distance; a balanced body is not. */
+function handlerBody(app, anchor) {
+  const at = app.indexOf(anchor);
   if (at < 0) return null;
   let i = app.indexOf('{', at);
   const start = i + 1;
@@ -323,6 +332,55 @@ test('the containment lock cannot be escaped, and releases only what it took (v1
   for (const mod of ['www/js/drive.js', 'www/js/settings.js', 'www/js/snapshot.js']) {
     assert.doesNotMatch(CODE.get(mod), /contain:/, `${mod} carries containment state — it must stay device-local`);
   }
+});
+
+test('an ACTIVE lock offers re-lock, not release-only, and re-lock asks the duration again (v1.0.76)', () => {
+  // ⚠️ THE REPORTED BUG: with a lock active, every padlock tap was release-only (an early
+  // return), so the "how long?" dialog appeared on the FIRST lock and never again — a parent
+  // who had locked a site and then wanted to lock the app could not reach it.
+  const app = CODE.get('www/js/app.js');
+  const tap = fnSlice(app, 'async function onLockTap(');
+  // the active branch must present a CHOICE routed through the pure decision, not just release
+  assert.match(tap, /relockChoice\(/, 'onLockTap no longer offers a choice — it is release-only again');
+  assert.match(tap, /askKid\(/, 'the active branch shows no dialog — the parent cannot choose to re-lock');
+  // re-lock must reach the duration dialog (engageLock → askLockDuration), the whole point
+  assert.match(tap, /engageLock\(scope\)/, 'the re-lock path does not re-engage the tapped scope');
+  const engage = fnSlice(app, 'function engageLock(');
+  assert.match(engage, /askLockDuration\(/, 'engageLock never opens the "how long?" dialog');
+  // the FRESH-lock path (no active lock) still asks the code THEN the duration — engageLock
+  // runs inside onSuccess, never before the PIN
+  assert.match(tap, /onSuccess: \(\) => \{ engageLock\(scope\); \}/,
+    'a fresh lock skips the code screen — engageLock must sit inside onSuccess');
+  // the site viewer's padlock got the SAME fix (it was release-only too)
+  const site = fnSlice(app, 'async function onSiteLockTap(');
+  assert.match(site, /relockChoice\(/, 'the site viewer padlock is release-only again');
+  assert.match(site, /askLockDuration\('site'/, 'the site re-lock never asks the duration');
+});
+
+test('a site lock has two grains, and a page lock is enforced by the SAME rule machinery (v1.0.76)', () => {
+  const app = CODE.get('www/js/app.js');
+  // the viewer's padlock asks the grain on BOTH engage and re-lock (feature 4 rides on the
+  // feature-3 re-lock), routed through the pure decision
+  const site = fnSlice(app, 'async function onSiteLockTap(');
+  assert.match(app, /async function askSiteGrain\(/, 'the whole-site/page question is gone');
+  assert.match(fnSlice(app, 'async function askSiteGrain('), /siteLockGrain\(/,
+    'the grain question no longer maps its answer through the pure decision');
+  // ⚠️ the narrowing is chosen by GRAIN: a page lock uses rulesForLockedPage, a site lock
+  // rulesForLockedSite — both hand the native side an ordinary rule list, so enforcement is
+  // unchanged (no Java touch). openLockedSite must branch on the grain.
+  const open = fnSlice(app, 'async function openLockedSite(');
+  assert.match(open, /siteGrain === 'prefix'/, 'openLockedSite ignores the grain — a page lock would open as a whole-site lock');
+  assert.match(open, /rulesForLockedPage\(/, 'the page-lock narrowing is gone');
+  assert.match(open, /rulesForLockedSite\(/, 'the whole-site narrowing is gone');
+  // the grain must be PERSISTED (it survives a restart, like the rest of the lock) and it is
+  // written before applyContainment/openLockedSite read it
+  const commit = fnSlice(app, 'async function commitLockSetup(');
+  assert.match(commit, /containGrainKey/, 'the grain is not persisted — a page lock reopens as a site lock after a restart');
+  // ⚠️ onDone is driven by the SUCCESS BOOLEAN, never a `settled` flag: consumePinDone(true)
+  // fires onDone BEFORE onSuccess runs, so a flag would still be false and the site would
+  // reopen on success (a latent v1.0.67 bug). Pin the boolean shape.
+  assert.match(site, /onDone: \(ok\) =>/, 'onSiteLockTap onDone reads a flag set too late — it reopens on success');
+  assert.doesNotMatch(site, /let settled = false/, 'the settled-flag pattern is back — it reopens the site on success');
 });
 
 test('a Drive folder is ADDITIVE and never mirrors deletions (v1.0.56)', () => {
@@ -2484,6 +2542,21 @@ const JAVA_PAIRS = [
   'android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java',
   'native-reference/KidsWebPlugin.java'
 ];
+
+/** v1.0.76 — a Java method's body, brace-balanced from the first `{` at/after `at`. The
+ *  Java twin of handlerBody: a fixed char window bleeds into the next method and passes on
+ *  a deleted call (proven — the onPageFinished plant). */
+function javaMethodBody(src, at) {
+  let i = src.indexOf('{', at);
+  if (i < 0) return '';
+  const start = i;
+  let depth = 0;
+  for (; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (!depth) return src.slice(start, i + 1); }
+  }
+  return src.slice(start);
+}
 const readRepo = (p) => readFileSync(join(ROOT, p), 'utf8');
 /** Java source with comments stripped. Every positional/absence guard below MUST use
  *  this: the comments deliberately NAME what they forbid ("verifying a PIN in Java
@@ -2823,6 +2896,41 @@ test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.
     // and closing the viewer must not leak a detached surface
     assert.match(body.slice(body.indexOf('private void closeOverlay')), /exitFullscreen\(\)/,
       `${p}: closing while fullscreen leaves the video surface attached`);
+  }
+});
+
+test('the site viewer has browser back/forward, greyed when dead, in BOTH java copies (v1.0.76)', () => {
+  // Node cannot tap a native button; this pins the wiring a behavioural test cannot reach,
+  // comment-stripped (the v1.0.45 lesson — the comments NAME what they describe).
+  for (const p of JAVA_PAIRS) {
+    const body = readRepoCode(p);
+    // the two buttons exist and drive the WebView's real history — no second implementation
+    assert.match(body, /navBack\s*=\s*navButton\(/, `${p}: no browser BACK button`);
+    assert.match(body, /navFwd\s*=\s*navButton\(/, `${p}: no browser FORWARD button`);
+    assert.match(body, /web\.goForward\(\)/, `${p}: forward button does not walk history`);
+    // the enabled state is refreshed — a dead arrow a child taps reads as a broken app.
+    // updateNavButtons must key on canGoBack/canGoForward…
+    const upd = body.slice(body.indexOf('private void updateNavButtons()'),
+                           body.indexOf('private void updateNavButtons()') + 500);
+    assert.match(upd, /canGoBack\(\)/, `${p}: the back button is never disabled`);
+    assert.match(upd, /canGoForward\(\)/, `${p}: the forward button is never disabled`);
+    // …and it must be called from EVERY history hook AND open, or a pushState / a fresh page
+    // leaves a stale arrow (onPageStarted misses same-document navs; onPageFinished is where
+    // canGoForward flips false once a new nav commits).
+    for (const hook of ['onPageStarted', 'onPageFinished', 'doUpdateVisitedHistory']) {
+      const at = body.indexOf('public void ' + hook + '(');
+      assert.ok(at > 0, `${p}: ${hook} is gone — re-anchor this guard`);
+      // ⚠️ BRACE-BALANCED, not a char window: a fixed window from onPageFinished( bled into
+      // the NEXT hook (which also calls updateNavButtons) and stayed green with this hook's
+      // call deleted — the handlerBody trap, a third time.
+      assert.match(javaMethodBody(body, at), /updateNavButtons\(\)/,
+        `${p}: ${hook} does not refresh the nav buttons — a stale/dead arrow`);
+    }
+    // the fields are cleared on teardown (the overlay is rebuilt on the next open), like
+    // titleView — a stale reference would mis-drive the next session's bar
+    const fc = body.slice(body.indexOf('private void forceClose()'), body.indexOf('private void forceClose()') + 700);
+    assert.match(fc, /navBack = null/, `${p}: navBack leaks past teardown`);
+    assert.match(fc, /navFwd = null/, `${p}: navFwd leaks past teardown`);
   }
 });
 
@@ -4403,4 +4511,162 @@ test('the lock screen follows the PLAYER, not the last button pressed (v1.0.74)'
     'the toggle publishes its own optimistic state instead of waiting for the player');
   assert.match(toggle, /if \(st\.playing\) pauseCurrent\(\); else resumeCurrent\(\);/,
     'the toggle no longer just asks the player and lets the event report back');
+});
+
+/* ---------------- picture-in-picture (v1.0.76) ---------------- */
+
+test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding, and every lock refuses it (v1.0.76)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1) ⚠️ THE PAUSE GATE COMES FIRST. Entering PiP fires the very appStateChange the
+  //    v1.0.32 screen-off handler listens to — without this gate the video pauses the
+  //    instant it shrinks and the whole feature is a frozen floating frame. It must
+  //    precede the save (a save-then-return would still be harmless, but the gate being
+  //    FIRST is what documents the contract: a shrink is not a backgrounding).
+  const body = appPauseBody(app);
+  assert.ok(body, 'the onAppPause listener is gone');
+  const gate = body.indexOf('if (inPipMode) return');
+  assert.ok(gate >= 0, 'the screen-off handler pauses the video the moment PiP begins');
+  assert.ok(gate < body.indexOf('saveWatchPosition'),
+    'the PiP gate sits after the pause work — the contract is decided before anything runs');
+
+  // 2) THE WINDOW GOING AWAY HAS ITS OWN DOOR, and it repeats the v1.0.32 contract: no
+  //    appStateChange fires (the activity already paused at PiP entry), so onPipHidden
+  //    must save FIRST (the live playhead), consult the bgPlay decision, and pause IN
+  //    PLACE — never stop() (the "הסרטון נעלם" class).
+  // brace-balanced, NOT a char window: the window version reached into the neighbouring
+  // onAppPause and stayed green with the bgPlay consult deleted (proven by its own plant)
+  const hidden = handlerBody(app, 'onPipHidden(');
+  assert.ok(hidden, 'nothing listens for the PiP window going away — X leaves the video playing blind');
+  const hSave = hidden.indexOf('saveWatchPosition(currentWatch');
+  const hPause = hidden.indexOf('pauseCurrent()');
+  assert.ok(hSave >= 0, 'the PiP-hidden door no longer banks the stop point');
+  assert.ok(hPause >= 0 && hSave < hPause, 'the PiP-hidden door pauses before saving — stale playhead');
+  assert.match(hidden, /backgroundPlayDecision\(/,
+    'the PiP-hidden door ignores bgPlay — screen-off over the window would silence a legitimate background listen');
+  assert.doesNotMatch(hidden, /\bstop\(\)/, 'the PiP-hidden door tears the player down');
+
+  // 3) ELIGIBILITY IS PUSHED AHEAD AND EVERY LOCK REFUSES IT. The pure decision owns the
+  //    rule (unit-tested); this pins the WIRING — refreshPipState must hand it the kiosk
+  //    AND the containment state, or a lock silently stops applying to PiP.
+  const refresh = fnSlice(app, 'async function refreshPipState(');
+  assert.match(refresh, /pipEligibility\(/, 'refreshPipState no longer delegates to the pure decision');
+  assert.match(refresh, /contained: containState\.active/, 'a containment lock no longer reaches the PiP decision');
+  assert.match(refresh, /exitLockOn\(/, 'the kiosk no longer reaches the PiP decision');
+  assert.match(refresh, /kiosk = true/,
+    'an unreadable kiosk setting must read as STRICT (kiosk on), never as "no kiosk"');
+  // …and the push points exist: a video opening, the player reporting play/pause, the
+  // watch view leaving. Each is a moment the pushed answer changes.
+  // ⚠️ anchored to the arm call, NOT the whole function: openWatch also carries the
+  // onPlayState callback (which mentions refreshPipState), so a whole-function match was
+  // proven VACUOUS by its own plant — it stayed green with the direct call deleted.
+  assert.match(fnSlice(app, 'async function openWatch('), /armBackgroundPlayback\(item\)[\s\S]{0,320}?refreshPipState\(/,
+    'opening a video no longer refreshes the pushed PiP state');
+  assert.match(app, /onPlayState: \(playing\) => \{ republishBackgroundState\(playing\)\.catch\(\(\) => \{\}\); refreshPipState\(\)/,
+    'a play/pause no longer refreshes the PiP state — the window ⏯ icon and auto-enter go stale');
+  // …and BOTH engines report. The file engine has since v1.0.74 (its own guard); the YT
+  // engine reports through `cb` — NEVER `opts`, which reuse() swaps away, so `opts` would
+  // report into the PREVIOUS video's callbacks. Without this, eligibility and the ⏯ icon
+  // go stale on every YouTube video — half the library. (Proven red by its own plant.)
+  assert.match(CODE.get('www/js/player.js'), /cb\.onPlayState\(e\.data === YT\.PlayerState\.PLAYING\)/,
+    'the YouTube engine no longer reports play/pause — PiP goes stale on YouTube videos');
+  const watchLeave = app.slice(app.indexOf("nav.register('watch'"), app.indexOf("nav.register('watch'") + 2600);
+  assert.match(watchLeave, /pipTrack = null/, 'a left watch view keeps a stale ⏮/⏭ track');
+  assert.match(watchLeave, /refreshPipState\(/, 'leaving the watch view leaves PiP armed for a dead video');
+
+  // 4) THE SKIP IS THE GRID'S OWN ORDER — pageAnyFolder, THE pagination entry point (the
+  //    v1.0.63 precedent), never a second reading of the folder rules; and the state is
+  //    RE-READ after the await (the v1.0.57 rule — the command is retained natively).
+  const track = fnSlice(app, 'async function buildPipTrack(');
+  assert.match(track, /pageAnyFolder\(/, 'the PiP track no longer comes from the one pagination entry point');
+  const skip = fnSlice(app, 'async function pipSkip(');
+  assert.match(skip, /pipSkipTarget\(/, 'the skip no longer goes through the pure gift-skipping decision');
+  const afterAwait = skip.slice(skip.indexOf('await buildPipTrack()'));
+  assert.match(afterAwait, /nav\.isActive\('watch'\)/,
+    'pipSkip does not re-check the watch view after its await — a retained ⏭ starts a video into a left screen');
+  // routed BEFORE the bgPlay gate: PiP must work with background playback off
+  const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
+  const route = cmd.indexOf("action === 'prev'");
+  assert.ok(route >= 0, 'the PiP ⏮/⏭ verbs are not routed at all');
+  assert.ok(route < cmd.indexOf('bgPlayEnabled'),
+    'prev/next sit behind the bgPlay gate — the PiP buttons die whenever background playback is off');
+  assert.match(cmd, /!bgPlayEnabled && !pipEnabled/,
+    'the ⏯ gate no longer admits PiP — the window\'s pause button dies with bgPlay off');
+
+  // 5) the idle "עדיין צופים?" is held during PiP — the prompt renders under a window
+  //    that forwards no taps, so an unanswerable question would just park the video.
+  assert.match(fnSlice(app, 'async function tickIdleSleep('), /\|\| inPipMode/,
+    'the idle timer counts against a PiP session nobody can answer');
+});
+
+test('PiP: the native half is declared, lock-gated, ordered, and identical in both copies (v1.0.76)', () => {
+  // Node cannot press HOME — these are source guards over the halves a behavioural test
+  // cannot reach, comment-stripped (the v1.0.45 lesson: three guards fired on their own
+  // comments).
+  const strip = (s) => s.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  for (const name of ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']) {
+    const m = readRepo(name).replace(/<!--[\s\S]*?-->/g, '');
+    assert.match(m, /android:supportsPictureInPicture="true"/,
+      `${name}: the activity cannot PiP — enterPictureInPictureMode throws at runtime`);
+  }
+  // the plugin pair must not drift (MainActivity/manifest already ride the byte-identical
+  // pair test; KidsNativePlugin joins it here because the PiP logic lives in it)
+  assert.equal(readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'),
+    readRepo('native-reference/KidsNativePlugin.java'),
+    'the two KidsNativePlugin copies have drifted');
+
+  const main = strip(readRepo('android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java'));
+  assert.match(main, /onUserLeaveHint\(\)[\s\S]{0,200}?maybeEnterPip\(this\)/,
+    'HOME no longer offers PiP — the 26–30 / 3-button path is dead');
+  assert.match(main, /onPictureInPictureModeChanged\(boolean[\s\S]{0,300}?onPipModeChanged\(this/,
+    'the mode change no longer reaches JS — the pause handler cannot tell a shrink from a backgrounding');
+  // onStop must consult the PiP hook BEFORE super — after it, plugin state may be torn down
+  const stopAt = main.indexOf('public void onStop()');
+  assert.ok(stopAt > 0, 'MainActivity lost its onStop override — a dismissed window leaves the video playing blind');
+  const stopBody = main.slice(stopAt, stopAt + 220);
+  assert.ok(stopBody.indexOf('onPipActivityStopped()') >= 0
+      && stopBody.indexOf('onPipActivityStopped()') < stopBody.indexOf('super.onStop()'),
+    'onStop calls super before the PiP hook');
+
+  const plug = strip(readRepo('android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java'));
+  // ⚠️ THE KIOSK GATE IS NATIVE TOO: maybeEnterPip must refuse under screen pinning even
+  // if a stale eligibility was pushed — the OS would refuse anyway, but the decision must
+  // be ours, not an OS side effect.
+  const enter = plug.slice(plug.indexOf('static void maybeEnterPip('), plug.indexOf('static void maybeEnterPip(') + 600);
+  assert.match(enter, /pipEligible/, 'maybeEnterPip ignores the pushed decision — PiP fires for every family');
+  assert.match(enter, /inLockTaskStatic\(/, 'maybeEnterPip no longer refuses under the kiosk pin');
+  // the three window buttons ride the EXISTING retained command channel
+  for (const verb of ['"prev"', '"next"', '"toggle"']) {
+    assert.match(plug, new RegExp(`emitPlaybackCommand\\(${verb}\\)`),
+      `the PiP window's ${verb} button no longer reaches JS`);
+  }
+  // the broadcast stays inside this app (pre-33 context receivers are world-reachable)
+  assert.match(plug, /setPackage\(a\.getPackageName\(\)\)/,
+    'the PiP action broadcasts lost setPackage — a stranger can skip the child\'s track');
+  assert.match(plug, /FLAG_IMMUTABLE/, 'the PiP PendingIntents are mutable');
+  // both event names, retained (a frozen WebView must not lose the pause contract)
+  assert.match(plug, /notifyListeners\("pipChanged", o, true\)/, 'pipChanged is not retained');
+  assert.match(plug, /notifyListeners\("pipHidden", o, true\)/, 'pipHidden is not retained');
+
+  // the four action icons exist in BOTH res trees (a missing drawable is a runtime crash
+  // when the window builds its actions)
+  for (const dir of ['android/app/src/main/res/drawable', 'native-reference/res/drawable']) {
+    for (const icon of ['ic_pip_prev', 'ic_pip_next', 'ic_pip_play', 'ic_pip_pause']) {
+      // comment-stripped: the file's own comment EXPLAINS why fillType is banned, and a
+      // guard that fires on its explanation is the v1.0.69 trap for the fourth time
+      const svg = readRepo(`${dir}/${icon}.xml`).replace(/<!--[\s\S]*?-->/g, '');
+      assert.match(svg, /fillColor="#FFFFFFFF"/,
+        `${dir}/${icon}: not flat white — a RemoteAction icon is drawn from its alpha and tinted`);
+      assert.doesNotMatch(svg, /fillType/,
+        `${dir}/${icon}: android:fillType is API 24 — it forces PNG fallbacks nothing here generates`);
+    }
+  }
+
+  // the settings row: per-profile, synced, and the tie resolves OFF (the bgPlay asymmetry —
+  // a wrong "on" quietly opens a door out of the app)
+  const settings = CODE.get('www/js/settings.js');
+  assert.match(settings, /pip: false/, "the 'pip' setting lost its safe tie direction");
+  const html = readRepo('www/index.html');
+  assert.match(html, /id="pip-toggle"/, 'the PiP toggle is gone from the settings screen');
+  assert.match(html, /id="pip-row"/, 'the PiP row cannot be hidden on devices that cannot PiP');
 });

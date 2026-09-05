@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- v1.0.76 — the PiP window's ⏸ (shown while PLAYING: the action is what a tap will do).
+     Flat white, no raster fallbacks — the ic_pip_prev.xml rules. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FFFFFFFF"
+      android:pathData="M6,19h4V5H6v14zM14,5v14h4V5h-4z" />
+</vector>

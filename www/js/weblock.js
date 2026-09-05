@@ -206,6 +206,37 @@ export function rulesForLockedSite(rules, url) {
   return (rules || []).filter((r) => r && r.host === host);
 }
 
+/**
+ * v1.0.76 — PURE: the rules in force while the child is LOCKED ONTO ONE PAGE and its
+ * sub-pages (user request: "לנעול דף ספציפי … הילד יוכל לגלוש בכל הכתובות עם התחילית").
+ *
+ * The narrower sibling of `rulesForLockedSite`. Where that keeps the whole HOST, this keeps
+ * exactly ONE synthetic rule: the locked page's full path, so the child may navigate only to
+ * that prefix and deeper (`/abc/1/efg` → `/abc/1/efg/…`) and nowhere else on the site.
+ *
+ * ⚠️ IT CAN ONLY EVER NARROW, never grant. `here` is the rule that already governs the
+ * locked page (matchRule), and matchRule guarantees `here.segments` is a PREFIX of the
+ * page's segments — so the synthetic rule (the page's full segments) is equal-or-deeper,
+ * i.e. a subset of what the child could already reach. It inherits `here.allowExternal` for
+ * the same reason `rulesForLockedSite` keeps it: a site that renders broken without its
+ * third-party embeds must keep working.
+ *
+ * Comparison stays BY SEGMENT (the whole weblock doctrine): `/abc/1/efg` never admits
+ * `/abc/1/efgX`. An unmatched url yields `[]` — a viewer that can navigate nowhere, so the
+ * caller refuses to engage a lock it cannot describe (the strict direction, exactly as
+ * `rulesForLockedSite`).
+ */
+export function rulesForLockedPage(rules, url) {
+  const here = matchRule(rules, url);
+  if (!here) return [];
+  const canon = canonicalSitePrefix(url);
+  if (!canon.ok) return [];
+  return [{
+    host: canon.host, port: canon.port, segments: canon.segments,
+    allowExternal: !!here.allowExternal
+  }];
+}
+
 /** May the child NAVIGATE here? Any rule is enough. */
 export function navAllowed(rules, url) {
   return matchRule(rules, url) !== null;

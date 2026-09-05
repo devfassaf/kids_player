@@ -109,6 +109,21 @@ url + title + iconUrl         host + port + segments[] + allowExternal
 הכל ב-`weblock.ruleCandidatesFor`, טהור ובדוק. `defaultIndex` **אסור** שיצביע על
 `whole-site`: הילד לחץ על קישור אחד, ופתיחת דומיין שלם היא יותר ממה שנשאל.
 
+### נעילת containment על אתר / על דף (v1.0.76)
+נעילת 'site' יש לה **גרעין** (`siteGrain`): `'host'` = כל האתר המאושר (התנהגות v1.0.67,
+ברירת המחדל הבטוחה), `'prefix'` = הדף הנעול ותתי-הדפים שלו בלבד. הצמצום הוא ב-`weblock`:
+`rulesForLockedSite` (host) מול `rulesForLockedPage` (prefix) — **שניהם מחזירים רשימת
+`{host,port,segments}` רגילה, אז הצד הנייטיבי לא משתנה.** `openLockedSite` בוחר לפי
+`containState.siteGrain`. הגרעין נשמר ב-`contain:<pid>:sitegrain` ושורד ריסטארט;
+`evalContainment` מפרש כל ערך שאינו `'prefix'` כ-`'host'` — **לעולם לא נועלים ילד על דף
+בשקט**. השאלה "כל האתר / רק הדף הזה" היא `plan.siteLockGrain` (ok→host, third→prefix).
+"צלילה פנימה" = נעילה-מחדש (feature 3) על הדף הנוכחי (`lockCandidateSiteUrl`), עם תחילית
+צרה יותר. `rulesForLockedPage` **רק מצמצם, לעולם לא מעניק** — `matchRule` מבטיח שה-segments
+של הכלל השולט הם תחילית של הדף, כך שהכלל הסינתטי הוא תת-קבוצה.
+⚠️ `onSiteLockTap`'s `onDone` **חייב לקרוא את הבוליאן** (`(ok) => …`), לא דגל `settled`:
+`consumePinDone(true)` מפעיל את onDone **לפני** `pinOnSuccess`, אז דגל היה נקרא false
+בהצלחה והאתר היה נפתח מחדש מעל דיאלוג הזמן.
+
 ### לשנות את שאלת התוכן החיצוני
 היא יושבת ב-`runSiteAdd` ומועברת דרך `addSiteShortcut` → `addSiteRule`. אם מוסיפים
 תשובה רביעית — `askKid` נותן שלושה כפתורים בלבד; דיאלוג שני יהיה הדרך.

@@ -273,6 +273,180 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.76 — **HOME SHRINKS THE VIDEO INTO A FLOATING WINDOW (PiP)** (user request),
+  **opt-in, per profile, OFF unless a parent turns it on** — the bgPlay shape (v1.0.63),
+  one surface up.
+  - **THE MECHANISM IS ANDROID'S OWN PICTURE-IN-PICTURE** (API 26+): the activity shrinks
+    into a floating window over the launcher. The window's X and expand are the SYSTEM'S
+    OWN affordances; only ⏮/⏯/⏭ are ours (RemoteActions), and their taps ride the EXISTING
+    `playbackCommand` retained-until-consumed channel — no second command path.
+  - ⚠️ **ENTERING PiP FIRES THE VERY appStateChange THE v1.0.32 SCREEN-OFF HANDLER PAUSES
+    ON.** Android pauses the activity when the video shrinks — so without a gate the whole
+    feature is a frozen floating frame. `inPipMode` is set by the native `pipChanged`
+    event, which Android fires BEFORE the onPause (onPictureInPictureModeChanged precedes
+    it, and bridge events keep their order); the handler's FIRST line consults it.
+    Guard-pinned as an ORDER (the gate before the save), and the event order itself is a
+    device checklist item — the one link no browser can prove.
+  - **THE DECISION IS PUSHED AHEAD OF THE HOME PRESS** (`setPipState`): `onUserLeaveHint`
+    is synchronous and cannot ask the bridge — the v1.0.63 cached-decision shape, one layer
+    down, cached as statics in the plugin. Pure `playerlogic.pipEligibility` owns the rule;
+    pushed from openWatch, every onPlayState, the watch view's onLeave, the setting/kiosk
+    toggles, and both containment doors (engage + clear).
+  - ⚠️ **EVERY LOCK REFUSES PiP, AND THAT IS THE SAFETY HALF OF THE FEATURE**: the floating
+    window sits over the LAUNCHER, i.e. HOME with PiP armed walks the child out of the app
+    with the video in tow — exactly the door the kiosk (exitLock), every containment mode
+    and the scheduled break exist to close. Refused in JS (`pipEligibility`: kiosk/contained)
+    AND natively (`maybeEnterPip` re-checks `inLockTaskStatic` — the OS refuses under screen
+    pinning anyway, but the decision must be OURS, not an OS side effect). An unreadable
+    kiosk setting reads as kiosk-ON (strict), and the settings hint SAYS the window floats
+    over the home screen rather than letting a parent discover it. Browser-verified: with
+    the kiosk on, the pushed state was `eligible:false` while the video kept `playing:true`.
+  - **YOUTUBE IS INCLUDED — THE OPPOSITE OF bgPlay, DELIBERATELY** (user decision
+    2026-09-06): in PiP the activity stays VISIBLE, so the WebView is never throttled or
+    evicted — the reason YouTube is excluded from background playback does not apply. The YT
+    engine therefore learned to report play/pause through `cb.onPlayState` (the file engine
+    has since v1.0.74; through `cb`, NEVER `opts` — reuse() swaps it, and `opts` would report
+    into the PREVIOUS video's callbacks). The background service is unaffected: republish is
+    gated on `bgPlayLive`, which YouTube never arms. **Nothing pinned this before** — a plant
+    deleting the YT reporter left the whole suite green, so a new guard covers it.
+  - **⏮/⏭ ARE REAL TRACK SKIPS** (user decision 2026-09-06 — the notification keeps its
+    ±10s, v1.0.68; two surfaces, two jobs). The track is built ONCE from `pageAnyFolder` —
+    THE pagination entry point (the v1.0.63 precedent, capped at `PIP_TRACK_MAX`) — so the
+    window can never disagree with the grid the child last saw. **A wrapped gift is SKIPPED,
+    never opened** (pure `pipSkipTarget`; a THROWING gift predicate reads as "gift" — unknown
+    must skip, fail closed); **no wrap-around** (a chain that loops plays all night); and the
+    state is RE-READ after the await (v1.0.57 — the command is retained natively). The verbs
+    route BEFORE the bgPlay gate: PiP works with background playback off, and the window's ⏯
+    is admitted by `pipEnabled` alone — while ⏪10/⏩10 stay the notification's.
+  - **THE WINDOW GOING AWAY HAS ITS OWN DOOR** (`pipHidden`): the X, or the screen turning
+    off over it, arrive as `onStop` with NO appStateChange (the activity already paused at
+    entry). Natively a dismissal is told from an EXPAND by what follows the mode change —
+    onStop within 2s = dismissed, onResume = expanded. The JS door repeats the v1.0.32
+    contract exactly: save FIRST (the live playhead), consult `backgroundPlayDecision`
+    (screen-off over the window must not silence a legitimate bgPlay listen), pause IN
+    PLACE, never stop().
+  - **"עדיין צופים?" IS HELD DURING PiP** — the prompt renders inside `#player-wrap` and a
+    PiP window forwards no taps to the page, so the question would be unanswerable; the
+    counter is held at NOW like bgPlay's hidden branch (v1.0.63).
+  - **IN THE WINDOW THE APP STRIPS TO THE VIDEO** (`html.pip`, CSS only): the whole activity
+    is scaled into ~2 inches, so the top bar, title, grid and pager would be unreadable
+    confetti. A fullscreen video already fills the window through the native custom view; the
+    CSS covers the windowed case (the audio scene, a windowed video).
+  - ⚠️ **TWO OF THE FIRST GUARDS WERE PROVEN VACUOUS BY THEIR OWN PLANTS**, the lesson of
+    this release: a whole-function match on openWatch was satisfied by the onPlayState
+    callback INSIDE it (re-anchored to the arm call), and a 700-char window from
+    `onPipHidden(` reached INTO the neighbouring onAppPause once comments were stripped and
+    matched THAT handler's `backgroundPlayDecision` (`handlerBody` — the appPauseBody
+    brace-balancing, generalized — replaced it). A char window into app.js is a guess about
+    distance; a balanced body is not. A guard also fired on the icon file's own comment (the
+    v1.0.69 trap, a fourth time — read comment-stripped).
+  - Icons are flat white vectors (alpha-tint, v1.0.66), no raster fallbacks (nothing here
+    uses an API-24 attribute, v1.0.69), unmirrored transport glyphs. `pip: false` joined
+    SAFE_ON_TIE — a tie that answers "on" quietly opens a door out of the app.
+  - 2 unit tests (23 assertions) + 2 invariants guards (42 assertions), every guard proven
+    red on a planted regression (12). APK builds and both PiP-touching java files are
+    byte-identical across copies (KidsNativePlugin joined the parity set); the four drawables
+    are confirmed PACKAGED. Browser-verified with a stubbed bridge on a real audio record:
+    eligibility pushed on play for BOTH engines, the pause gate keeping the video playing on
+    PiP entry, `pipHidden` pausing in place, ⏮/⏭ walking the real grid order with no
+    wrap-around, a wrapped gift skipped, ⏯ working with bgPlay off, the idle prompt held, and
+    the kiosk refusing PiP mid-play. **Real PiP — the window, its buttons, the event order,
+    YouTube's behaviour inside it — is a DEVICE checklist item.**
+
+- v1.0.76 — **THE APPROVED-SITES VIEWER GAINS BROWSER BACK/FORWARD** (user request: "כפתורים
+  ימינה ושמאלה … כמו שיש בדפדפן אינטרנט"). Two buttons at the RTL-LEFT of the viewer bar
+  (opposite the 🏠 pill), driving the WebView's OWN history (`goBack`/`goForward`).
+  - **THE GLYPHS ARE THE APP'S OWN PAGER LANGUAGE** (`ui/pager.js`): ▶ = "previous" (back),
+    ◀ = "next" (forward), mirrored for RTL — so a child meets ONE arrow convention across
+    the whole app, and it matches Android's own RTL browser.
+  - **GREYED WHEN DEAD** (`updateNavButtons`, `canGoBack`/`canGoForward` → `setEnabled` +
+    35% alpha): a child must not tap an arrow that does nothing. Refreshed from open() and
+    from EVERY history hook — `onPageStarted`, `onPageFinished` (where `canGoForward` flips
+    to false once a new nav commits) and `doUpdateVisitedHistory` (a same-document pushState
+    that `onPageStarted` misses).
+  - ⚠️ **NOT A HOLE IN THE SAFETY BOUNDARY.** `goBack`/`goForward` reach only history
+    entries that `shouldOverrideUrlLoading` ALREADY vetted when they first loaded, and a
+    site lock rebuilds the overlay (mode change → forceClose → fresh WebView, empty history),
+    so an in-lock history holds only in-lock pages. History navigation does not re-run the
+    URL filter and does not need to. `weblock.js` is untouched — this is pure chrome.
+  - Fields, not locals (the history hooks reach them), nulled in `forceClose` beside
+    `titleView`. Both java copies; the ⚠️ guard's per-hook check is BRACE-BALANCED
+    (`javaMethodBody`) after a fixed char window bled into the next hook and passed with a
+    deleted call — the handlerBody trap, a third time.
+  - **DEVICE-ONLY**: the viewer is a native overlay that does not exist in a browser, so the
+    whole feature is a device-checklist item. 1 invariants guard (both copies), proven red
+    on four planted regressions; APK compiles.
+
+- v1.0.76 — **AN ACTIVE LOCK CAN BE RE-LOCKED, NOT ONLY RELEASED** (field report: "בפעם
+  הראשונה שואל לכמה זמן, בפעם השנייה שאני רוצה לנעול — החלונית לא מופיעה").
+  - **ROOT CAUSE: WITH ANY LOCK ACTIVE, EVERY PADLOCK TAP WAS RELEASE-ONLY** — the active
+    branch of both `onLockTap` and `onSiteLockTap` did the code, cleared the lock, and
+    RETURNED. So the "how long?" dialog appeared on the FIRST lock and never again: a parent
+    who had locked a SITE and then wanted to lock the APP tapped the app padlock, met the
+    code, and the lock simply released — there was no path to set a second lock, or to change
+    a duration, without releasing first. Reproduced in the browser exactly (the PIN title
+    read "קוד הורים לשחרור הנעילה" and the lock dropped to 🔓 with no dialog).
+  - **THE FIX IS A CHOICE AFTER THE CODE** (pure `plan.relockChoice`, the user's decision
+    2026-09-06): 'ok' = release (the primary button — the common intent when a 🔒 shows),
+    'third' = re-lock with a FRESH duration, anything else = leave it be. Re-lock uses the
+    scope of the padlock the parent tapped (so a site-locked parent tapping the app padlock
+    gets an APP lock) and NEVER asks for the code twice — they just entered it. The mapping
+    is pinned so a swapped pair cannot hand a child a release where the parent meant re-lock.
+  - **THE FRESH-LOCK PATH IS UNCHANGED**: with no lock active the padlock still asks the code
+    THEN the duration, straight through, no choice. `engageLock` (the shared duration-dialog
+    opener) sits INSIDE `onSuccess`, never before the PIN — a guard pins that, because moving
+    it out would drop the code gate on the first lock.
+  - `computeLockTarget` is the ONE place that resolves a tapped padlock to {mode, fid,
+    siteUrl} (or refuses an undescribable site / a folder with no folder), so the engage and
+    re-lock paths can never compute the target differently.
+  - This is also the mechanism feature 4 ("צלילה פנימה" — lock a deeper page) needs: a
+    re-lock while a site lock is active is exactly how a parent narrows to a sub-page.
+  - 1 unit test (`relockChoice`) + 1 invariants guard (both padlocks), every guard proven red
+    on a planted regression (6). Browser-verified end to end through the real PIN gate: a
+    second lock now opens the duration dialog pre-filled with the remembered value, re-lock
+    engaged a new 45-min timer, release still cleared the lock, and a fresh lock still asked.
+
+- v1.0.76 — **THE PARENT CAN LOCK A CHILD ONTO ONE PAGE'S URL-PREFIX, AND DIVE DEEPER**
+  (user request: "לנעול דף ספציפי … הילד יוכל לגלוש בכל הכתובות עם התחילית … ולצלול פנימה
+  ולשמור תתי-דפים").
+  - **A PAGE LOCK IS A SITE LOCK, JUST NARROWER** — so it is a `siteGrain` FLAG on the
+    existing 'site' mode, not a new mode. That one decision keeps every `mode === 'site'`
+    check (the chrome, the boot reopen, the wasLocked branch, the exit/back handling)
+    untouched: only the rule-narrowing reads the grain. `'host'` (the v1.0.67 behaviour, and
+    the safe default) keeps the whole approved site; `'prefix'` keeps the locked page and its
+    sub-pages.
+  - **THE NARROWING IS PURE `weblock.rulesForLockedPage`**, the narrower sibling of
+    `rulesForLockedSite`: it keeps ONE synthetic rule — the locked page's full path — so the
+    child may navigate only to that prefix and DEEPER. ⚠️ **IT CAN ONLY NARROW, NEVER
+    GRANT**: `matchRule` guarantees the governing rule's segments are a PREFIX of the page's,
+    so the synthetic rule (the page's full segments) is a SUBSET of what the child could
+    already reach. Comparison stays BY SEGMENT (`/abc/1/efg` never admits `/abc/1/efgX`), and
+    it inherits the governing rule's `allowExternal`. An unmatched page yields `[]` → the
+    caller refuses to engage (fail strict).
+  - **NO JAVA CHANGE**: a prefix rule is just a longer-segment `{host,port,segments}` rule,
+    and the native side already compares by segment. `openLockedSite` picks the narrowing by
+    `containState.siteGrain` and hands over the result exactly as before.
+  - **THE 🔒 ASKS THE GRAIN** (`plan.siteLockGrain`, user decision 2026-09-06): after the
+    code, "כל האתר / רק הדף הזה". 'ok' = whole site (the primary button, the safe default),
+    'third' = this page, else = backed out. **DIVING IN** rides feature 3's re-lock: navigate
+    deeper inside the locked prefix, tap 🔒 → re-lock on the CURRENT page (`lockCandidateSiteUrl`,
+    not the originally-locked one) → a narrower prefix. The grain is PERSISTED
+    (`contain:<pid>:sitegrain`) so a page lock survives a restart as a page lock, and
+    `evalContainment` defaults any unwritten/corrupted grain to `'host'` — the wider,
+    already-shipped behaviour, never silently pinning a child onto one page.
+  - ⚠️ **AND IT FIXES A LATENT v1.0.67 onDone BUG.** `onSiteLockTap`'s onDone used
+    `if (!settled …)`, but `consumePinDone(true)` fires onDone BEFORE `pinOnSuccess` runs, so
+    `settled` was still false on success and the site was reopened on TOP of the duration
+    dialog. onDone now reads the SUCCESS BOOLEAN it is passed (`(ok) => { if (!ok) … }`), the
+    pattern the share flow already used — reopen only on a real cancel.
+  - 6 unit tests (`rulesForLockedPage` × 3, `siteLockGrain`, `evalContainment` grain, the
+    page/site confirm text) + 1 invariants guard, every guard proven red on a planted
+    regression (6). Browser-verified end to end through the real PIN gate with a stubbed
+    viewer: the grain dialog, a page lock storing `prefix` and reopening with rules narrowed
+    to `['abc','1','efg']` (sub-pages allowed, siblings/root/`efgX` blocked), a whole-site
+    lock storing `host` with segments `[]`, and release from a page lock. **The site viewer
+    itself is a DEVICE checklist item.**
+
 - v1.0.75 — **A PAGE TURN NO LONGER FLASHES THE PAGE YOU LEFT** (field report: "אחרי
   שמדפדפים יש ריצוד ולרגע הדף הקודם מוצג, וכל הדפדוף לא חלק").
   - **ROOT CAUSE: THE ORDER IN `clearDrag`, AND THE COMMENT ON THE COMMIT PATH ALREADY

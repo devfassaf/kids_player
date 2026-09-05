@@ -489,6 +489,14 @@ async function playYouTube(item, host, opts = {}, seq = playSeq) {
       onStateChange: (e) => {
         if (e.data === YT.PlayerState.ENDED) { finish(); return; }
         if (e.data === YT.PlayerState.PLAYING) killCaptions();
+        // v1.0.76 — report play/pause like the file engine does (v1.0.74), THROUGH `cb`
+        // (reuse() swaps it — `opts` here would report into the PREVIOUS video's callbacks).
+        // PiP needs the real state for its ⏯ icon on BOTH engines; the background service
+        // is unaffected because republish is gated on `bgPlayLive`, which YouTube never arms.
+        // BUFFERING is deliberately not reported either way — it would flicker the icon.
+        if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED) {
+          try { if (cb.onPlayState) cb.onPlayState(e.data === YT.PlayerState.PLAYING); } catch {}
+        }
         hud.renderProgress();
       },
       // An embedding-disabled video (error 101/150 — routine in a curated kids library)
