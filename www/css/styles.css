@@ -255,14 +255,69 @@ body {
 
 /* ---------- Watch ---------- */
 #view-watch { padding-bottom: 30px; }
+/* v1.0.77 — the player is a TOP-LEVEL layer (moved out of #view-watch), so it survives
+   navigation into a floating mini-player without reparenting the YouTube iframe (which a
+   reparent RELOADS). Three modes, all CSS: .pw-docked (JS syncs it onto #player-slot),
+   .pw-mini (a draggable floating box) and .pw-hidden. Fullscreen still works in any mode. */
 .player-wrap {
-  position: relative;
-  width: min(100%, calc(64vh * 16 / 9));
-  aspect-ratio: 16 / 9;
-  margin: 0 auto;
   background: #000;
   overflow: hidden;
 }
+.player-wrap.pw-hidden { display: none; }
+/* docked: JS (syncDock) sets position:absolute + top/left/width/height onto the slot's
+   document rect, so the player sits exactly where it always did and scrolls with the page. */
+.player-wrap.pw-docked { position: absolute; margin: 0; z-index: 4; }
+/* the placeholder in #view-watch that reserves the docked player's box (same size as before). */
+.player-slot {
+  width: min(100%, calc(64vh * 16 / 9));
+  aspect-ratio: 16 / 9;
+  margin: 0 auto;
+}
+/* mini: a small floating box. JS sets left/top from the free-drag (bounded to the viewport).
+   z-index above the child browsing views but BELOW modals/pin/locked, which tear it down. */
+.player-wrap.pw-mini {
+  position: fixed;
+  width: min(46vw, 300px);
+  aspect-ratio: 16 / 9;
+  margin: 0;
+  z-index: 60;
+  border-radius: 14px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
+  touch-action: none;           /* the whole box is a drag surface in mini mode */
+  cursor: grab;
+}
+.player-wrap.pw-mini.pw-dragging { cursor: grabbing; }
+/* in mini the full-size chrome is meaningless — hide it, show the mini controls instead. */
+.player-wrap.pw-mini .player-hud,
+.player-wrap.pw-mini .player-topbar,
+.player-wrap.pw-mini .autoplay-next,
+.player-wrap.pw-mini .idle-prompt { display: none !important; }
+/* the shield in mini must not drive the HUD; the drag handler owns taps (tap = expand).
+   ID selector, not `.tap-shield` — the base shield rule's guard anchors on that class name
+   and must stay the first match (v1.0.52). */
+.player-wrap.pw-mini #tap-shield { touch-action: none; }
+.mini-controls { display: none; }
+/* controls are ALWAYS visible in mini (best discoverability for a pre-reader): X top-right,
+   and a centered ⏮ ⛶ ⏭ row. The container is transparent so the video stays visible; a tap
+   on the video itself (not a button) EXPANDS back to the watch screen (drag-vs-tap in JS). */
+.player-wrap.pw-mini .mini-controls {
+  position: absolute; inset: 0; z-index: 5;
+  display: flex; align-items: flex-end; justify-content: center; gap: 12px;
+  padding-bottom: 8px; pointer-events: none;   /* the box handles tap/drag; buttons re-enable */
+}
+.mini-btn {
+  pointer-events: auto;
+  border: 0; background: rgba(255, 255, 255, 0.92); color: #2d2a4a;
+  width: 38px; height: 38px; border-radius: 50%; font-size: 16px; line-height: 1;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); flex: 0 0 auto;
+}
+.mini-close {
+  position: absolute; top: 6px; inset-inline-end: 6px; width: 30px; height: 30px; font-size: 14px;
+  background: rgba(0, 0, 0, 0.6); color: #fff;
+}
+/* fullscreen must beat every mode's positioning. */
+.player-wrap:fullscreen, .player-wrap:-webkit-full-screen { position: fixed; inset: 0; z-index: 100; }
 .player-host { position: absolute; inset: 0; }
 .player-host iframe, .player-host video { width: 100%; height: 100%; border: 0; display: block; }
 /* Transparent layer over the player: blocks YouTube's own overlay/logo/end-cards;

@@ -396,74 +396,10 @@
              PIN again, then an explicit confirm (user-specified order). -->
         <button id="watch-delete" class="round-btn watch-delete" type="button" aria-label="מחיקת הסרטון">🗑️</button>
       </div>
-      <div id="player-wrap" class="player-wrap hud-on">
-        <div id="player-host" class="player-host"></div>
-        <!-- v1.0.56 — audio (mp3) plays through the same <video>, which is a black
-             rectangle. This CSS-only music scene covers it while `.is-audio` is on the
-             wrap (player.js toggles it — record's media kind, corrected at runtime).
-             pointer-events:none ALWAYS — the HUD-container invariant: nothing over the
-             video may swallow the shield's taps. Self-contained, no assets. -->
-        <div id="audio-scene" class="audio-scene" aria-hidden="true">
-          <span class="audio-note n1">🎵</span>
-          <span class="audio-note n2">🎶</span>
-          <span class="audio-disc">📻</span>
-          <span class="audio-note n3">🎵</span>
-          <span class="audio-note n4">🎶</span>
-        </div>
-        <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
-        <div id="seek-feedback" class="seek-feedback"></div>
-        <!-- v1.0.53 — now-playing overlay, FULLSCREEN ONLY (user decision 2026-08-19):
-             the title already sits under the player everywhere else, but in fullscreen
-             nothing says what is playing. INSIDE player-wrap (the fullscreen element),
-             fades with .hud-on, and pointer-events:none ALWAYS — the HUD-container
-             invariant: text over the video must never swallow the shield's taps. -->
-        <div id="player-topbar" class="player-topbar" aria-hidden="true">
-          <div id="np-title" class="np-title" dir="auto"></div>
-          <div id="np-channel-row" class="np-channel-row hidden">
-            <span id="np-logo-host" class="np-logo-host"></span>
-            <span id="np-channel" class="np-channel" dir="auto"></span>
-          </div>
-        </div>
-        <!-- v1.0.25 continuous play. INSIDE player-wrap on purpose: that is the element
-             that goes fullscreen, and anything outside it is invisible while a video
-             plays. It is the child's only visible way to stop a chain, so the stop button
-             is deliberately the biggest thing on it. -->
-        <div id="autoplay-next" class="autoplay-next hidden">
-          <img id="autoplay-thumb" class="autoplay-thumb" alt="" />
-          <div class="autoplay-body">
-            <div class="autoplay-label">הסרטון הבא מתחיל בעוד <span id="autoplay-count">5</span></div>
-            <div id="autoplay-title" class="autoplay-title"></div>
-          </div>
-          <button id="autoplay-stop" class="btn autoplay-stop" type="button">✋ עצור</button>
-        </div>
-        <!-- v1.0.34 idle screen-off. INSIDE player-wrap for the same reason as
-             autoplay-next: that is the element that goes fullscreen, and anything
-             outside it is invisible while a video plays. ANY touch or remote key
-             answers it (the global input listener consumes that one event), so the
-             button is an affordance, not the only target. -->
-        <div id="idle-prompt" class="idle-prompt hidden">
-          <div class="idle-prompt-card">
-            <div class="idle-prompt-label">עדיין צופים? 👀</div>
-            <button id="idle-yes" class="btn idle-yes" type="button">כן! ממשיכים ▶</button>
-          </div>
-        </div>
-        <div class="player-hud">
-          <div class="player-controls">
-            <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
-          </div>
-          <!-- v1.0.32: elapsed ⁄ total flank the bar (user request — like YouTube's app).
-               The row is LTR like the timeline itself, so elapsed sits by the bar's start. -->
-          <div class="seek-row" dir="ltr">
-            <span id="time-cur" class="seek-time">0:00</span>
-            <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
-              <div class="seek-track"></div>
-              <div id="seek-fill" class="seek-fill"></div>
-              <div id="seek-knob" class="seek-knob"></div>
-            </div>
-            <span id="time-dur" class="seek-time">0:00</span>
-          </div>
-        </div>
-      </div>
+      <!-- v1.0.77: the player is a TOP-LEVEL layer (below), so it survives nav into a
+           floating mini-player. This slot reserves its docked box; JS syncs the
+           player onto it (dockPlayer/syncDock). -->
+      <div id="player-slot" class="player-slot"></div>
       <h1 id="watch-title" class="watch-title hidden"></h1>
       <div id="watch-status" class="watch-status hidden"></div>
       <h2 class="watch-more-title">עוד סרטונים</h2>
@@ -1028,6 +964,88 @@
         <button id="reset-pin" class="btn btn-small btn-danger" type="button">איפוס קוד ההורים</button>
       </footer>
     </section>
+
+
+    <!-- ===================== PLAYER (v1.0.77: TOP-LEVEL LAYER) =====================
+         Lives here, OUTSIDE the views, so it is never reparented (a reparented
+         YouTube iframe RELOADS) and can float over any screen as a mini-player.
+         Modes are CSS: .pw-docked (synced onto #player-slot) / .pw-mini / .pw-hidden. -->
+      <div id="player-wrap" class="player-wrap hud-on pw-hidden">
+        <div id="player-host" class="player-host"></div>
+        <!-- v1.0.56 — audio (mp3) plays through the same <video>, which is a black
+             rectangle. This CSS-only music scene covers it while `.is-audio` is on the
+             wrap (player.js toggles it — record's media kind, corrected at runtime).
+             pointer-events:none ALWAYS — the HUD-container invariant: nothing over the
+             video may swallow the shield's taps. Self-contained, no assets. -->
+        <div id="audio-scene" class="audio-scene" aria-hidden="true">
+          <span class="audio-note n1">🎵</span>
+          <span class="audio-note n2">🎶</span>
+          <span class="audio-disc">📻</span>
+          <span class="audio-note n3">🎵</span>
+          <span class="audio-note n4">🎶</span>
+        </div>
+        <div id="tap-shield" class="tap-shield" aria-hidden="true"></div>
+        <div id="seek-feedback" class="seek-feedback"></div>
+        <!-- v1.0.53 — now-playing overlay, FULLSCREEN ONLY (user decision 2026-08-19):
+             the title already sits under the player everywhere else, but in fullscreen
+             nothing says what is playing. INSIDE player-wrap (the fullscreen element),
+             fades with .hud-on, and pointer-events:none ALWAYS — the HUD-container
+             invariant: text over the video must never swallow the shield's taps. -->
+        <div id="player-topbar" class="player-topbar" aria-hidden="true">
+          <div id="np-title" class="np-title" dir="auto"></div>
+          <div id="np-channel-row" class="np-channel-row hidden">
+            <span id="np-logo-host" class="np-logo-host"></span>
+            <span id="np-channel" class="np-channel" dir="auto"></span>
+          </div>
+        </div>
+        <!-- v1.0.25 continuous play. INSIDE player-wrap on purpose: that is the element
+             that goes fullscreen, and anything outside it is invisible while a video
+             plays. It is the child's only visible way to stop a chain, so the stop button
+             is deliberately the biggest thing on it. -->
+        <div id="autoplay-next" class="autoplay-next hidden">
+          <img id="autoplay-thumb" class="autoplay-thumb" alt="" />
+          <div class="autoplay-body">
+            <div class="autoplay-label">הסרטון הבא מתחיל בעוד <span id="autoplay-count">5</span></div>
+            <div id="autoplay-title" class="autoplay-title"></div>
+          </div>
+          <button id="autoplay-stop" class="btn autoplay-stop" type="button">✋ עצור</button>
+        </div>
+        <!-- v1.0.34 idle screen-off. INSIDE player-wrap for the same reason as
+             autoplay-next: that is the element that goes fullscreen, and anything
+             outside it is invisible while a video plays. ANY touch or remote key
+             answers it (the global input listener consumes that one event), so the
+             button is an affordance, not the only target. -->
+        <div id="idle-prompt" class="idle-prompt hidden">
+          <div class="idle-prompt-card">
+            <div class="idle-prompt-label">עדיין צופים? 👀</div>
+            <button id="idle-yes" class="btn idle-yes" type="button">כן! ממשיכים ▶</button>
+          </div>
+        </div>
+        <div class="player-hud">
+          <div class="player-controls">
+            <button id="ctl-fs" class="ctl-btn" type="button" aria-label="מסך מלא">⛶</button>
+          </div>
+          <!-- v1.0.32: elapsed ⁄ total flank the bar (user request — like YouTube's app).
+               The row is LTR like the timeline itself, so elapsed sits by the bar's start. -->
+          <div class="seek-row" dir="ltr">
+            <span id="time-cur" class="seek-time">0:00</span>
+            <div id="seek" class="seek" dir="ltr" role="slider" aria-label="מיקום בסרטון" tabindex="-1">
+              <div class="seek-track"></div>
+              <div id="seek-fill" class="seek-fill"></div>
+              <div id="seek-knob" class="seek-knob"></div>
+            </div>
+            <span id="time-dur" class="seek-time">0:00</span>
+          </div>
+        </div>
+        <!-- v1.0.77 — mini-player chrome, shown ONLY in .pw-mini (CSS). The tap-shield
+             above expands on tap in mini mode; these are the explicit controls. -->
+        <div id="mini-controls" class="mini-controls" aria-hidden="true">
+          <button id="mini-close" class="mini-btn mini-close" type="button" aria-label="סגירה">✕</button>
+          <button id="mini-prev" class="mini-btn mini-prev" type="button" aria-label="הקודם">⏮</button>
+          <button id="mini-expand" class="mini-btn mini-expand" type="button" aria-label="הגדלה">⛶</button>
+          <button id="mini-next" class="mini-btn mini-next" type="button" aria-label="הבא">⏭</button>
+        </div>
+      </div>
 
   </div>
 

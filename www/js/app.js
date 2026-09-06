@@ -25,14 +25,14 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
   CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES,
-  PIP_TRACK_MAX } from './config.js';
+  PIP_TRACK_MAX, TAP_SLOP_PX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, opensFullscreen,
-  pipEligibility, pipSkipTarget } from './playerlogic.js';
+  pipEligibility, pipSkipTarget, miniEligible } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -193,6 +193,7 @@ async function applyExitLockUi() {
  */
 async function applyExitLock() {
   const on = await exitLockOn();
+  kioskCached = on === true; // v1.0.77 — sync mirror for the mini-player's BACK decision
   try {
     const { lockTask } = await import('./platform.js');
     // v1.0.36: PIN ONLY, NEVER UNPIN, on profile activation. stopLockTask() makes many
@@ -356,6 +357,9 @@ async function showLockedScreen() {
   // very screen where they set the timer would be absurd. The next tick (or their return to
   // the gallery) shows it once they leave. The lock is stamped either way, so no time is lost.
   if (nav.isActive('parent') || nav.isActive('pin') || nav.isActive('connect') || nav.isActive('tour')) return;
+  // v1.0.77 — a break ends the floating mini-player too: a video floating over the lock
+  // screen would defeat the break entirely (and sit above it at z-index 60).
+  teardownMini();
   // v1.0.63 — A BREAK STOPS THE MUSIC TOO. Screen time that leaves a song playing is not a
   // break, and the notification would hand the child a ⏭ button that carried on through the
   // whole lock — the site-viewer lesson above, on the new surface. Placed AFTER the
@@ -918,7 +922,10 @@ async function tickIdleSleep() {
   // v1.0.76 — and while shrunk into a PiP window, for the same reason turned sideways:
   // the prompt renders inside #player-wrap, and a tap on a PiP window reaches only the
   // system's own controls — a question nobody can answer would just park the video.
-  if ((bgPlayLive && document.hidden) || inPipMode) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
+  // v1.0.77 — and while floating as the in-app mini-player (the user's decision: keep
+  // playing, suspend the timer): the child is present and browsing, and the "עדיין צופים?"
+  // prompt is hidden by the mini CSS anyway, so it would silently park the video.
+  if ((bgPlayLive && document.hidden) || inPipMode || miniActive) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
   const afterMin = screenOffMinutes(
     await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
   const st = playbackState();
@@ -1649,8 +1656,20 @@ function registerViews() {
     onBack: () => containState.active && (containState.mode === 'sites' || containState.mode === 'site')
   });
   nav.register('watch', {
+    // v1.0.77 — BACK minimises to the floating mini-player instead of tearing the video
+    // down, when eligible (pip setting on, no lock, no kiosk, a video playing). Returns
+    // false so nav still POPS to the previous screen; onLeave sees `minimizing` and keeps
+    // the player alive. A container/kiosk lock makes canMiniplayer() false, so BACK is never
+    // a back door out of a lock. Not consumed in fullscreen — handleBack exits that first.
+    onBack: () => {
+      if (canMiniplayer()) { minimizingToMini = true; return false; }
+      return false;
+    },
     onLeave: (prev, next) => {
       if (next && next.name === 'watch') return; // video→video: player.js reuses the iframe
+      // v1.0.77 — minimising: keep the player ALIVE and float it; the child browses the
+      // screen we are popping to. None of the teardown below runs.
+      if (minimizingToMini) { minimizingToMini = false; enterMini(); return; }
       resetAutoplayChain(); // a queued next video must never follow the child out
       // v1.0.32: bank the stop point BEFORE stop() tears the clock down. openWatch's
       // save-previous covers the video→video path that returned above.
@@ -1670,6 +1689,10 @@ function registerViews() {
       stop();
       wake.releaseAll();
       currentWatch = null;
+      // v1.0.77 — HIDE the player. It is a TOP-LEVEL layer now, so nav no longer hides it by
+      // hiding the watch view — without this it would stay pw-docked, floating over the
+      // screen we popped to.
+      hidePlayer();
       // v1.0.76 — no video, no PiP: the pushed eligibility follows the watch view down,
       // and a stale track must not steer a later session's ⏮/⏭.
       pipTrack = null;
@@ -3719,6 +3742,7 @@ async function refreshPipState() {
   if (!pipAvailable) return; // browser, pre-8 Android, TV — nothing to push to
   let kiosk = false;
   try { kiosk = (await exitLockOn()) === true; } catch { kiosk = true; } // unreadable ⇒ strict
+  kioskCached = kiosk; // v1.0.77 — keep the mini-player's sync mirror fresh
   const st = playbackState();
   const { eligible } = pipEligibility({
     enabled: pipEnabled, supported: pipAvailable, tv: false, // TV already folded into pipAvailable
@@ -3810,6 +3834,201 @@ async function handlePlaybackCommand(action) {
   await republishBackgroundState(st.playing);
 }
 
+/* ---------------- in-app floating mini-player (v1.0.77) ----------------
+ *
+ * User request: pressing BACK while a video plays keeps the child IN the app (navigating to
+ * the previous screen) with the video floating in a small, draggable window — like
+ * minimizing a video inside the YouTube app. This is NOT the OS PiP of v1.0.76 (HOME): that
+ * backgrounds the whole app. This is a pure in-app overlay.
+ *
+ * THE PLAYER IS A TOP-LEVEL LAYER (index.html moved #player-wrap out of #view-watch), so it
+ * is NEVER reparented — a reparented YouTube iframe reloads. Three CSS modes:
+ *   docked : positioned onto #player-slot inside the watch view (the normal, unchanged look)
+ *   mini   : a small fixed floating box, draggable, with ✕ / ⏮ / ⛶ / ⏭
+ *   hidden : no video
+ *
+ * Gated exactly like the OS PiP and by the user's own note: only when the `pip` setting is
+ * on, no containment lock is active, the kiosk exit-lock is OFF, and a video is playing —
+ * so a child can never use it as a back door out of a lock.
+ */
+let miniActive = false;
+let minimizingToMini = false;         // set by watch onBack, read by onLeave, one hop apart
+let kioskCached = false;              // sync mirror of exitLockOn() for the BACK decision
+let miniDrag = null;                  // { id, dx, dy, moved } during a drag
+const MINI_ALLOWED_VIEWS = new Set(['gallery', 'folder', 'sites', 'search']);
+
+/** The player is mounted and playing (docked in watch, OR floating as mini). Many guards
+ *  mean "a video is live", not literally "the watch view is on screen". */
+function isPlayerLive() { return nav.isActive('watch') || miniActive; }
+
+function setPlayerMode(mode) {
+  const w = $('player-wrap');
+  if (!w) return;
+  w.classList.remove('pw-docked', 'pw-mini', 'pw-hidden');
+  w.classList.add('pw-' + mode);
+}
+
+/** Glue the docked player onto #player-slot's document rect (absolute, so it scrolls with
+ *  the page). Writes ONLY when the rect changed — so the rAF loop below is cheap. */
+let lastDockKey = '';
+function syncDock() {
+  const w = $('player-wrap');
+  const slot = $('player-slot');
+  if (!w || !slot || !w.classList.contains('pw-docked')) return;
+  const r = slot.getBoundingClientRect();
+  if (!r.width) return; // slot not laid out yet (view still painting) — the loop retries
+  const op = w.offsetParent || document.body;
+  const opr = op.getBoundingClientRect();
+  const left = r.left - opr.left, top = r.top - opr.top;
+  const key = left + '|' + top + '|' + r.width + '|' + r.height;
+  if (key === lastDockKey) return;
+  lastDockKey = key;
+  w.style.left = left + 'px';
+  w.style.top = top + 'px';
+  w.style.width = r.width + 'px';
+  w.style.height = r.height + 'px';
+}
+
+/** Show the player docked in the watch view. Called from openWatch and from expand.
+ *
+ * ⚠️ SYNCED VIA setTimeout, NOT requestAnimationFrame: the FIRST openWatch after load lays
+ * the watch view out over several frames, so a one-shot sync misses it — and rAF is PAUSED
+ * while the page is hidden (backgrounded, or a hidden preview pane), which would stall the
+ * positioning. setTimeout fires regardless of visibility. Absolute positioning scrolls with
+ * the document on its own, so no per-scroll sync is needed — only these settling retries
+ * plus the resize/orientation/fullscreen-exit calls. syncDock writes only on a real change. */
+function dockPlayer() {
+  miniActive = false;
+  const w = $('player-wrap');
+  if (w) { w.style.left = w.style.top = w.style.width = w.style.height = ''; }
+  lastDockKey = '';
+  setPlayerMode('docked');
+  for (const d of [0, 60, 200, 500]) setTimeout(syncDock, d);
+}
+
+/** Hide the player entirely (a real teardown does stop() separately). */
+function hidePlayer() {
+  miniActive = false;
+  setPlayerMode('hidden');
+}
+
+/** Can BACK minimise instead of leaving? Sync (onBack must return a boolean), so it reads
+ *  the cached kiosk flag. The user's rule: only with the pip setting on, no lock, no kiosk,
+ *  a video playing — never a back door out of a lock. */
+function canMiniplayer() {
+  if (!currentWatch) return false;
+  const st = playbackState();
+  return miniEligible({
+    enabled: pipEnabled,
+    tv: document.documentElement.classList.contains('tv'), // a remote can't drag a window
+    watching: nav.isActive('watch'),
+    playing: !!(st && st.playing),
+    kiosk: kioskCached,
+    contained: containState.active
+  });
+}
+
+/** Float the live player as a draggable mini window (BACK, while eligible). The player keeps
+ *  playing; the child browses the previous screen underneath. */
+function enterMini() {
+  miniActive = true;
+  setPlayerMode('mini');
+  const w = $('player-wrap');
+  if (w) {
+    w.style.width = w.style.height = ''; // CSS sizes the mini box
+    // default bottom-inline-end; the child can drag it anywhere (bounded).
+    const box = w.getBoundingClientRect();
+    const margin = 12;
+    placeMini(window.innerWidth - box.width - margin, window.innerHeight - box.height - margin);
+  }
+  $('mini-controls')?.setAttribute('aria-hidden', 'false');
+  refreshMiniPrevNext();
+}
+
+/** Expand the mini back to the full watch screen WITHOUT restarting playback (the player is
+ *  already live). Repaints the watch chrome for the current video and docks the player. */
+async function expandMini() {
+  if (!currentWatch) { teardownMini(); return; }
+  const item = currentWatch;
+  nav.go('watch', { key: item.key });
+  setWatchTitle(item);
+  setWatchChannel(item);
+  paintFavButton(item.key);
+  renderWatchGrid(item);
+  dockPlayer();
+}
+
+/** Stop and hide the mini for good (✕, or navigating somewhere a video may not float). */
+function teardownMini() {
+  if (!miniActive) return;
+  saveWatchPosition(currentWatch);
+  disarmCallResume();
+  disarmBackgroundPlayback().catch(() => {});
+  clearInterval(posTimer); posTimer = null;
+  resetAutoplayChain();
+  stop();
+  wake.releaseAll();
+  currentWatch = null;
+  pipTrack = null;
+  hidePlayer();
+  refreshPipState().catch(() => {});
+}
+
+/** Place the mini box at (x, y), clamped to the viewport (free-drag with bounds). */
+function placeMini(x, y) {
+  const w = $('player-wrap');
+  if (!w) return;
+  const box = w.getBoundingClientRect();
+  const maxX = Math.max(0, window.innerWidth - box.width);
+  const maxY = Math.max(0, window.innerHeight - box.height);
+  w.style.left = Math.min(Math.max(0, x), maxX) + 'px';
+  w.style.top = Math.min(Math.max(0, y), maxY) + 'px';
+}
+
+function refreshMiniPrevNext() {
+  // grey ⏮/⏭ when the frozen grid order has nowhere to go (same order as the PiP skip).
+  if (!miniActive) return;
+  Promise.resolve().then(async () => {
+    if (!pipTrack || pipTrack.scope !== watchCtx.scope || pipTrack.folderId !== watchCtx.folderId) {
+      await buildPipTrack();
+    }
+    const isGift = (k) => { const g = giftStates.get(k); return !!(g && g.giftRank && !g.unwrappedAt); };
+    const has = (dir) => !!(currentWatch && pipTrack && pipSkipTarget({
+      keys: pipTrack.keys, currentKey: currentWatch.key, dir, isGift
+    }));
+    const prev = $('mini-prev'); const next = $('mini-next');
+    if (prev) prev.disabled = !has(-1);
+    if (next) next.disabled = !has(1);
+  }).catch(() => {});
+}
+
+/** pointerdown/move/up on the mini box: a drag moves it, a tap (no move) expands it. */
+function onMiniPointerDown(e) {
+  if (!miniActive) return;
+  if (e.target.closest('.mini-btn')) return; // a control button owns its own tap
+  const w = $('player-wrap');
+  const box = w.getBoundingClientRect();
+  // dx/dy = grab offset within the box; sx/sy = start point, to tell a tap from a drag.
+  miniDrag = { id: e.pointerId, dx: e.clientX - box.left, dy: e.clientY - box.top,
+    sx: e.clientX, sy: e.clientY, moved: false };
+  try { w.setPointerCapture(e.pointerId); } catch {}
+  w.classList.add('pw-dragging');
+}
+function onMiniPointerMove(e) {
+  if (!miniDrag || e.pointerId !== miniDrag.id) return;
+  if (Math.hypot(e.clientX - miniDrag.sx, e.clientY - miniDrag.sy) > TAP_SLOP_PX) miniDrag.moved = true;
+  placeMini(e.clientX - miniDrag.dx, e.clientY - miniDrag.dy);
+}
+function onMiniPointerUp(e) {
+  if (!miniDrag || e.pointerId !== miniDrag.id) return;
+  const w = $('player-wrap');
+  w.classList.remove('pw-dragging');
+  try { w.releasePointerCapture(e.pointerId); } catch {}
+  const moved = miniDrag.moved;
+  miniDrag = null;
+  if (!moved) expandMini().catch(() => {}); // a tap (not a drag) expands
+}
+
 async function openWatch(item) {
   // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
   // reuses or tears down the player (the clock goes with it).
@@ -3826,6 +4045,11 @@ async function openWatch(item) {
   // with but the music scene, and doing so hides the seek bar and the way back. The call
   // stays SYNCHRONOUS and unawaited either way — the tap's user activation is spent by the
   // first await, and a conditional costs nothing.
+  // v1.0.77 — make the player visible (docked) SYNCHRONOUSLY before the fullscreen request:
+  // it now starts pw-hidden (top-level layer), and requestFullscreen on a display:none
+  // element is refused. dockPlayer() below re-syncs its box once the watch view is laid out.
+  setPlayerMode('docked');
+  miniActive = false;
   if (opensFullscreen(item)) enterPlayerFullscreen();
   // watch-grid context: the record's own folder (or where the child was browsing)
   // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
@@ -3861,6 +4085,7 @@ async function openWatch(item) {
   // user actually SEES the player instead of staying scrolled at the grid.
   if (nav.isActive('watch')) nav.replace('watch', { key: item.key }); // keep the child's grid page
   else { watchPage = 0; nav.go('watch', { key: item.key }); }
+  dockPlayer(); // v1.0.77 — position the top-level player onto the watch view's slot
   const status = $('watch-status');
   status.classList.add('hidden');
   status.textContent = '';
@@ -3890,7 +4115,9 @@ async function openWatch(item) {
   // screen is off must still know where the child stopped.
   clearInterval(posTimer);
   posTimer = setInterval(() => {
-    if (!nav.isActive('watch') || !currentWatch) return;
+    // v1.0.77 — isPlayerLive(): the player also runs while floating as a mini-player, when
+    // the watch view is NOT the active screen. The position must keep being banked there too.
+    if (!isPlayerLive() || !currentWatch) return;
     saveWatchPosition(currentWatch);
     stampWatched(currentWatch); // v1.0.57 — 🕒, independent of the resume setting
     // v1.0.57 — THE CALL THAT NEVER BACKGROUNDS THE APP. On a modern Android an incoming
@@ -3904,12 +4131,28 @@ async function openWatch(item) {
     if (st && !st.playing && !callResume && !idleParkedAt) checkCallResume().catch(() => {});
   }, RESUME_SAVE_MS);
 
-  await playItem(item, $('player-host'), {
+  await attachPlayer(item, startAt);
+}
+
+/**
+ * v1.0.77 — mount the player for `item` with the shared callbacks. Extracted from openWatch
+ * so the in-app mini-player's ⏮/⏭ can change track WITHOUT re-docking or going fullscreen
+ * (they call playMini → attachPlayer). onExit branches on the mode: a finished video closes
+ * the mini, or runs the autoplay chain when docked in the watch view.
+ */
+function attachPlayer(item, startAt) {
+  const status = $('watch-status');
+  return playItem(item, $('player-host'), {
     startAt,
     // v1.0.74 — the lock screen and the car follow the REAL state, not just the last button
     // pressed on the notification
     onPlayState: (playing) => { republishBackgroundState(playing).catch(() => {}); refreshPipState().catch(() => {}); },
-    onExit: (reason) => { if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch()); },
+    onExit: (reason) => {
+      // v1.0.77 — a floating mini video that ends/errs just closes; the autoplay chain and
+      // its countdown belong to the full watch screen only.
+      if (miniActive) { finishMini(reason); return; }
+      if ($('view-watch').classList.contains('active')) onVideoFinished(reason).catch(() => leaveWatch());
+    },
     onStatus: (s) => {
       if (!s) { status.classList.add('hidden'); status.textContent = ''; return; }
       status.textContent = s === 'downloading' ? 'טוען את הסרטון… רגע אחד ⏳'
@@ -3919,6 +4162,38 @@ async function openWatch(item) {
     },
     onThumb: (data) => persistThumb(item, data)
   });
+}
+
+/** v1.0.77 — the mini ⏮/⏭ change track and STAY floating (no dock, no fullscreen, no nav). */
+async function playMini(item) {
+  if (!item) return;
+  saveWatchPosition(currentWatch);
+  currentWatch = item;
+  const stored = giftStates.get(item.key);
+  const startAt = resumeStartAt({ enabled: resumeEnabled, posSec: stored && stored.posSec, durSec: stored && stored.durSec });
+  await attachPlayer(item, startAt);
+  refreshMiniPrevNext();
+  refreshPipState().catch(() => {});
+}
+
+/** The mini ⏮/⏭ target: the SAME frozen grid order the PiP skip uses, staying in mini. */
+async function miniSkip(dir) {
+  if (!miniActive || !currentWatch) return;
+  if (!pipTrack || pipTrack.scope !== watchCtx.scope || pipTrack.folderId !== watchCtx.folderId) await buildPipTrack();
+  if (!pipTrack) return;
+  const isGift = (k) => { const g = giftStates.get(k); return !!(g && g.giftRank && !g.unwrappedAt); };
+  const key = pipSkipTarget({ keys: pipTrack.keys, currentKey: currentWatch.key, dir, isGift });
+  if (key) await playMini(pipTrack.items.get(key));
+}
+
+/** A floating video that ENDED/errored: stamp it watched (ended), then close the mini. */
+function finishMini(reason) {
+  const item = currentWatch;
+  if (item && reason === 'ended') {
+    if (resumeEnabled) clearWatchPosition(item);
+    stampWatched(item, { force: true });
+  }
+  teardownMini();
 }
 
 /* Captured first frame of a direct file → Blob in the thumbs store (never base64 in a record). */
@@ -4126,6 +4401,9 @@ function updateDots() {
  * page whose player was already torn down.
  */
 function startPin(mode, { onSuccess = enterParent, replace = false, title = '', onDone = null } = {}) {
+  // v1.0.77 — a PIN screen (parent gate, profile switch, lock, exit) is a parent moment; a
+  // floating kid video over it (z-index 60) is wrong, so the mini-player is torn down here.
+  teardownMini();
   pinMode = mode; pinBuffer = ''; pinFirst = ''; pinStep = 1;
   pinOnSuccess = onSuccess;
   pinDone = onDone;
@@ -8019,6 +8297,7 @@ async function activateProfile(id) {
   // `bgPlay` is a PER-PROFILE answer: the new profile may not have it on at all. Torn down
   // before the switch, and re-armed by the next openWatch if the new child's setting says so.
   await disarmBackgroundPlayback().catch(() => {});
+  teardownMini(); // v1.0.77 — a floating video must not follow a profile switch either
   await setActiveId(id);
   activeProfileId = id;
   source = await getSource();
@@ -8379,6 +8658,7 @@ function wire() {
     // leaveWatch (a video that ENDED) exits fullscreen and then navigates away, and a
     // restore gated on "still watching" would leave the whole app stuck sideways.
     if (!nav.isActive('watch')) return;
+    syncDock(); // v1.0.77 — the docked player's box may have changed leaving fullscreen
     fsExitPinUntil = Date.now() + FS_EXIT_PIN_MS;
     // TWICE, and both are load-bearing. The immediate call is what makes this correct when
     // rAF cannot run — callbacks are SUSPENDED while the document is hidden (measured), so
@@ -8392,6 +8672,24 @@ function wire() {
   };
   document.addEventListener('fullscreenchange', onFullscreenChange);
   document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+  // v1.0.77 — the in-app mini-player. On resize/rotation, re-sync the docked box or re-clamp
+  // the floating one so it can never end up off-screen.
+  window.addEventListener('resize', () => {
+    if (miniActive) { const w = $('player-wrap'); const b = w.getBoundingClientRect(); placeMini(b.left, b.top); }
+    else syncDock();
+  });
+  const pw = $('player-wrap');
+  if (pw) {
+    pw.addEventListener('pointerdown', onMiniPointerDown);
+    pw.addEventListener('pointermove', onMiniPointerMove);
+    pw.addEventListener('pointerup', onMiniPointerUp);
+    pw.addEventListener('pointercancel', onMiniPointerUp); // the OS steals drags (v1.0.22)
+  }
+  $('mini-close')?.addEventListener('click', (e) => { e.stopPropagation(); teardownMini(); });
+  $('mini-expand')?.addEventListener('click', (e) => { e.stopPropagation(); expandMini().catch(() => {}); });
+  $('mini-prev')?.addEventListener('click', (e) => { e.stopPropagation(); miniSkip(-1).catch(() => {}); });
+  $('mini-next')?.addEventListener('click', (e) => { e.stopPropagation(); miniSkip(1).catch(() => {}); });
 
   $('watch-fav').addEventListener('click', () => { toggleFavourite().catch(() => {}); });
   $('watch-delete').addEventListener('click', onDeleteWatch);

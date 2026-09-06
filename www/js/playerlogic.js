@@ -274,6 +274,25 @@ export function pipEligibility({
  * a chain that loops would play all night; past either end the answer is null and the
  * button does nothing.
  */
+/**
+ * v1.0.77 — PURE: may BACK minimise the video into the in-app floating mini-player?
+ *
+ * This is the SAFETY BOUNDARY of the mini-player (the user's own rule): it may work only
+ * when the `pip` setting is on, NO containment lock is active, the kiosk exit-lock is OFF,
+ * and a video is actually playing — so a child can never use BACK-to-float as a way around a
+ * lock. TV is excluded (a remote cannot drag a floating window). Every refusal errs toward
+ * NOT floating — the safe direction, exactly like pipEligibility.
+ */
+export function miniEligible({
+  enabled = false, tv = false, watching = false, playing = false,
+  kiosk = false, contained = false
+} = {}) {
+  if (!enabled || tv) return false;
+  if (kiosk || contained) return false; // never a back door out of a lock
+  if (!watching) return false;
+  return !!playing;
+}
+
 export function pipSkipTarget({ keys = [], currentKey = null, dir = 1, isGift = () => false } = {}) {
   const list = Array.isArray(keys) ? keys : [];
   const i = list.indexOf(currentKey);

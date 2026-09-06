@@ -611,3 +611,24 @@ test('pipSkipTarget: grid order, gifts skipped never opened, no wrap-around', as
   assert.equal(pipSkipTarget({}), null);
   assert.equal(pipSkipTarget(), null);
 });
+
+test('miniEligible: BACK floats only with the setting on, no lock, no kiosk, and playing (v1.0.77)', async () => {
+  const { miniEligible } = await import('../www/js/playerlogic.js');
+  const base = { enabled: true, tv: false, watching: true, playing: true, kiosk: false, contained: false };
+  assert.equal(miniEligible(base), true, 'the happy path floats');
+  // the default is today's behaviour: BACK leaves the video, nothing floats
+  assert.equal(miniEligible({ ...base, enabled: false }), false);
+  // ⚠️ THE SAFETY BOUNDARY: never a back door out of a lock. A kiosk exit-lock OR any
+  // containment lock refuses the float — matching the user's own rule.
+  assert.equal(miniEligible({ ...base, kiosk: true }), false, 'the kiosk must block minimize');
+  assert.equal(miniEligible({ ...base, contained: true }), false, 'a containment lock must block minimize');
+  // a lock outranks a playing video with the setting on — safety first
+  assert.equal(miniEligible({ ...base, kiosk: true, enabled: true, playing: true }), false);
+  // a paused video, or one not being watched, has nothing to float
+  assert.equal(miniEligible({ ...base, playing: false }), false);
+  assert.equal(miniEligible({ ...base, watching: false }), false);
+  // a remote cannot drag a floating window
+  assert.equal(miniEligible({ ...base, tv: true }), false);
+  assert.equal(miniEligible({}), false);
+  assert.equal(miniEligible(), false);
+});

@@ -4670,3 +4670,65 @@ test('PiP: the native half is declared, lock-gated, ordered, and identical in bo
   assert.match(html, /id="pip-toggle"/, 'the PiP toggle is gone from the settings screen');
   assert.match(html, /id="pip-row"/, 'the PiP row cannot be hidden on devices that cannot PiP');
 });
+
+test('the in-app mini-player is a top-level layer, lock-gated, and torn down on every exit (v1.0.77)', () => {
+  const html = readRepo('www/index.html');
+  const app = CODE.get('www/js/app.js');
+
+  // 1) THE PLAYER IS A TOP-LEVEL LAYER, not inside #view-watch — a reparented YouTube iframe
+  //    reloads, so it must never move. #player-slot reserves its docked box in the watch view.
+  const watchStart = html.indexOf('id="view-watch"');
+  const watchEnd = html.indexOf('</section>', watchStart);
+  const watchInner = html.slice(watchStart, watchEnd);
+  assert.ok(watchInner.includes('id="player-slot"'), 'the watch view lost the player slot');
+  assert.ok(!watchInner.includes('id="player-wrap"'),
+    'the player is back INSIDE the watch view — nav would hide it, and it cannot float');
+
+  // 2) BACK MINIMISES ONLY WHEN ELIGIBLE, and returns false so nav still pops to the previous
+  //    screen. The gate is the pure decision (miniEligible) — the safety boundary.
+  const onBack = fnSlice(app, "onBack: () => {");
+  assert.match(onBack, /canMiniplayer\(\)/, 'watch onBack no longer consults the eligibility gate');
+  assert.match(onBack, /minimizingToMini = true/, 'BACK does not arm the minimise');
+  assert.match(CODE.get('www/js/app.js'), /function canMiniplayer\(\)[\s\S]{0,320}miniEligible\(/,
+    'canMiniplayer no longer delegates to the pure miniEligible gate');
+  // the pure gate itself refuses under a lock or the kiosk (belt: the unit test proves the
+  // logic; this proves production still routes both signals in)
+  const can = fnSlice(app, 'function canMiniplayer(');
+  assert.match(can, /kiosk: kioskCached/, 'the kiosk signal no longer reaches the gate');
+  assert.match(can, /contained: containState\.active/, 'the containment signal no longer reaches the gate');
+
+  // 3) onLeave: minimising KEEPS the player alive (enterMini) and returns BEFORE the
+  //    teardown; a real leave HIDES the top-level player (nav no longer hides it).
+  const leave = handlerBody(app, 'onLeave: (prev, next) => {');
+  assert.ok(leave, 'the watch onLeave is gone');
+  const miniAt = leave.indexOf('enterMini()');
+  const stopAt = leave.indexOf('stop()');
+  assert.ok(miniAt >= 0 && miniAt < stopAt, 'the minimise branch must run BEFORE (and skip) the teardown');
+  assert.match(leave, /if \(minimizingToMini\)[\s\S]{0,80}enterMini\(\);\s*return;/,
+    'the minimise branch does not keep the player alive and return');
+  assert.match(leave, /hidePlayer\(\)/, 'a real leave no longer hides the top-level player — it floats over the next screen');
+
+  // 4) TORN DOWN wherever a video may not float: the PIN gate, a scheduled break, a profile
+  //    switch. teardownMini is guarded (a no-op when not mini), so these are safe everywhere.
+  for (const [what, anchor] of [
+    ['the PIN screen', 'function startPin('],
+    ['a scheduled break', 'async function showLockedScreen('],
+    ['a profile switch', 'async function activateProfile(']
+  ]) {
+    assert.match(fnSlice(app, anchor), /teardownMini\(\)/, `the mini-player survives ${what}`);
+  }
+
+  // 5) the mini ⏮/⏭ change track through the SAME frozen grid order the PiP skip uses
+  //    (gifts skipped, no wrap), and STAY floating (playMini, not openWatch which docks).
+  const skip = fnSlice(app, 'async function miniSkip(');
+  assert.match(skip, /pipSkipTarget\(/, 'the mini skip no longer uses the shared grid-order decision');
+  assert.match(skip, /playMini\(/, 'the mini skip docks instead of staying floating');
+
+  // the setting row exists and the tie is safe (shared with PiP — one flag, both behaviours)
+  assert.match(CODE.get('www/js/settings.js'), /pip: false/, "the mini-player's setting lost its safe tie");
+
+  // 6) the idle "עדיין צופים?" timer is suspended while floating (the user's decision: keep
+  //    playing) — the prompt is hidden by the mini CSS, so it would silently park the video.
+  assert.match(fnSlice(app, 'async function tickIdleSleep('), /\|\| miniActive/,
+    'the idle timer parks the floating mini video nobody can answer');
+});
