@@ -4726,4 +4726,9 @@ test('the in-app mini-player is a top-level layer, lock-gated, and torn down on 
 
   // the setting row exists and the tie is safe (shared with PiP — one flag, both behaviours)
   assert.match(CODE.get('www/js/settings.js'), /pip: false/, "the mini-player's setting lost its safe tie");
+
+  // 6) the idle "עדיין צופים?" timer is suspended while floating (the user's decision: keep
+  //    playing) — the prompt is hidden by the mini CSS, so it would silently park the video.
+  assert.match(fnSlice(app, 'async function tickIdleSleep('), /\|\| miniActive/,
+    'the idle timer parks the floating mini video nobody can answer');
 });
