@@ -273,6 +273,59 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.77 — **BACK FLOATS THE VIDEO INTO AN IN-APP MINI-PLAYER** (user request: keep
+  browsing the app while the video plays in a small draggable window, like minimizing INSIDE
+  the YouTube app). The BACK companion to v1.0.76's HOME→OS-PiP, and a genuinely DIFFERENT
+  mechanism: OS PiP backgrounds the whole app; this keeps the app FOREGROUND and browsable
+  with the video floating over it.
+  - ⚠️ **THE PLAYER IS NOW A TOP-LEVEL LAYER** (`#player-wrap` moved OUT of `#view-watch` to
+    be a child of `#app`), because it must survive navigation to float over other screens —
+    and it is NEVER reparented: **a reparented YouTube iframe RELOADS.** Three CSS modes:
+    `pw-docked` (positioned onto `#player-slot` in the watch view — the unchanged look),
+    `pw-mini` (a fixed draggable box), `pw-hidden`. Fullscreen still works in any mode.
+  - ⚠️ **DOCKED POSITIONING IS SYNCED VIA setTimeout, NOT requestAnimationFrame.** The FIRST
+    openWatch after load lays the watch view out over several frames, so a one-shot sync
+    misses it — and **rAF is PAUSED while the page is hidden** (a backgrounded app, or a
+    hidden preview pane), which stalled a rAF loop dead (measured in the browser: the docked
+    player stayed 0×0). setTimeout fires regardless of visibility. Absolute positioning
+    scrolls with the document on its own, so only settling retries + resize/fullscreen-exit
+    syncs are needed; `syncDock` writes only on a real rect change.
+  - **THE SAFETY BOUNDARY IS PURE `playerlogic.miniEligible`** (the user's own rule): BACK
+    floats only when the `pip` setting is on, NO containment lock is active, the kiosk
+    exit-lock is OFF, and a video is PLAYING — so it can never be a back door out of a lock.
+    The kiosk is read from a sync mirror (`kioskCached`, set in applyExitLock/refreshPipState)
+    because `onBack` must return a boolean synchronously. Shares the ONE `pip` setting with
+    the OS-PiP (one flag, both behaviours). Watch `onBack` arms `minimizingToMini` and
+    returns FALSE so nav still pops to the previous screen; `onLeave` sees the flag and keeps
+    the player ALIVE (`enterMini`) instead of tearing it down.
+  - ⚠️ **A REAL LEAVE NOW HAS TO HIDE THE PLAYER EXPLICITLY** (`hidePlayer()` in the watch
+    `onLeave` teardown): nav used to hide it by hiding the watch view, but a top-level layer
+    is not hidden by nav — without this it floated `pw-docked` over the next screen (measured).
+  - **CONTROLS** (user decision 2026-09-06): free-drag with viewport bounds (a tap that does
+    not move EXPANDS; a drag moves — `TAP_SLOP_PX`, the shield's own rule); ✕ closes (stop);
+    ⛶ / a tap expands back to the watch screen WITHOUT restarting playback (`expandMini`
+    repaints the chrome and docks the LIVE player); ⏮/⏭ change track and STAY floating
+    (`miniSkip` → `playMini` → the shared `attachPlayer`, using the SAME frozen grid order as
+    the PiP skip — `pipSkipTarget`, gifts skipped, no wrap). A NEW video tapped in the grid
+    goes fullscreen/docked as always (openWatch).
+  - **KEEPS PLAYING, TIMER SUSPENDED** (user decision): the idle "עדיין צופים?" timer holds
+    while `miniActive` (the prompt is hidden by the mini CSS and would silently park the
+    video); `posTimer` keeps banking the position (guarded by `isPlayerLive()`, not
+    `nav.isActive('watch')`); a floating video that ENDS just closes the mini (`finishMini` —
+    the autoplay chain belongs to the full screen).
+  - **TORN DOWN WHEREVER A VIDEO MAY NOT FLOAT**: the PIN gate (`startPin`), a scheduled
+    break (`showLockedScreen`), a profile switch (`activateProfile`) — `teardownMini` is
+    guarded (a no-op when not mini), so the calls are safe everywhere.
+  - **PURE DOM/CSS/JS — NO JAVA.** Unlike the OS PiP, the whole feature is browser-testable,
+    and was verified end to end at a real 364px viewport: docked exactly over the slot on the
+    first play; BACK→float keeping playback while the folder/home stayed browsable; the mini
+    persisting across navigation; drag (bounded, not read as a tap); tap and ⛶ expanding; ⏭
+    changing track (וידאו 1→2) staying mini; ✕ closing (paused, hidden); a new video going
+    docked; and the kiosk gate refusing BACK-to-float and hiding the player on leave.
+  - 1 unit test (`miniEligible`, 9 assertions) + 1 invariants guard (the top-level layer, the
+    gate, the onLeave branches, the teardown points, the shared skip order, the idle
+    suspension), every guard proven red on a planted regression (7).
+
 - v1.0.76 — **HOME SHRINKS THE VIDEO INTO A FLOATING WINDOW (PiP)** (user request),
   **opt-in, per profile, OFF unless a parent turns it on** — the bgPlay shape (v1.0.63),
   one surface up.

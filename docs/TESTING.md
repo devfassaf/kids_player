@@ -260,6 +260,23 @@ for anything destructive, and purge it afterwards.
 - [ ] **Not on TV / old Android**: the "מסך קטן" row is hidden on a device that cannot PiP
       (pre-8) and on Android TV.
 
+### In-app mini-player (v1.0.77 — PURE DOM, browser-verified end to end; this list is a
+### device sanity pass, since the touch feel of dragging can only be judged on glass)
+- [ ] **BACK floats it**: with "מסך קטן" on, play a video, press the app's BACK → the video
+      shrinks to a small floating window and the app goes to the PREVIOUS screen (browsable),
+      the video still playing. (From fullscreen, the first BACK exits fullscreen; the next
+      floats — that is expected.)
+- [ ] **Drag** the window anywhere; it must stay within the screen edges. **Tap** it (no
+      drag) → it expands back to the video screen, still playing. **✕** closes and stops.
+      **⏮/⏭** change track while STAYING floating; **⛶** expands.
+- [ ] **Browse while floating**: open folders, search — the window keeps floating and playing
+      over them. Tap a NEW video → it opens fullscreen/docked as usual.
+- [ ] **The lock gate** (safety): with the kiosk exit-lock ON, or any folder/site/page lock,
+      BACK must NOT float — it leaves the video as before. A scheduled break, a profile
+      switch, and the parent PIN screen all close the floating window.
+- [ ] **YouTube** floats and keeps playing too (the activity stays foreground, so the WebView
+      is not throttled).
+
 ### Search inside a folder (v1.0.58 — the browser proved the scoping; these need a device)
 - [ ] **TV**: the 🔍 in the folder header is reachable with the D-pad, and typing works with
       the remote (the folder header now has four controls — check none is unreachable).
