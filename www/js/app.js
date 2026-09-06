@@ -4758,12 +4758,15 @@ async function refreshSitesPanel() {
         // The login door. Navigation is UNRESTRICTED here so an SSO round-trip to another
         // host can complete; the cookies it leaves are what let the child skip the login.
         { label: 'כניסה / בדיקה', onClick: () => { openSiteForParent(rec.url, rec.title).catch(() => {}); } },
-        { label: 'ניתוק', onClick: async () => {
+        // "Log out of this site" — clears the login COOKIES for this host so a saved sign-in
+        // does not carry over. v1.0.79: it no longer touches any other storage (the old
+        // version wiped the whole app database — see clearSiteData in KidsWebPlugin.java).
+        { label: 'התנתקות', onClick: async () => {
           const canon = canonicalSitePrefix(rec.url);
           if (!canon.ok) return;
-          if (!await confirmKid({ emoji: '🚪', title: 'לנתק מהאתר?', text: 'החיבור והנתונים השמורים של ' + canon.host + ' יימחקו מהמכשיר הזה.' })) return;
+          if (!await confirmKid({ emoji: '🚪', title: 'להתנתק מהאתר?', text: 'הכניסה (login) שלך ל-' + canon.host + ' תימחק מהמכשיר הזה, כך שיהיה צריך להתחבר מחדש. הסרטונים והרשימות לא ייפגעו.' })) return;
           await clearSiteData(canon.host);
-          toast('הנתונים נמחקו');
+          toast('התנתקת מהאתר');
         } }
       ],
       onDelete: async () => {

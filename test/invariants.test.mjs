@@ -2638,6 +2638,28 @@ test('the site collection travels in BOTH buildLocalDoc branches (v1.0.45)', () 
     'the prof: blob is gated on videos alone — a child with only websites would sync nothing');
 });
 
+test('disconnecting one site NEVER wipes the app database (v1.0.79)', () => {
+  // ⚠️ THE WORST DATA-LOSS BUG THE APP HAS SHIPPED. `clearSiteData` (the sites panel's
+  // "התנתקות" button) called `WebStorage.getInstance().deleteAllData()` — a per-app SINGLETON
+  // that clears EVERY origin's Web Storage, including the Capacitor WebView's IndexedDB where
+  // db.js keeps every profile's whole library. So "disconnect one site" silently deleted all
+  // videos of all profiles. There is no per-host Web Storage API on Android, so the only safe
+  // behaviour is to clear the host's COOKIES and touch nothing else. Comment-stripped, or the
+  // guard trips on the explanation that now lives in the method (the v1.0.45 lesson).
+  for (const p of JAVA_PAIRS) {
+    const code = readRepoCode(p);
+    // banned ANYWHERE in the plugin, not just clearSiteData — an app-wide wipe has no
+    // legitimate caller in a viewer that shares the app's storage partition.
+    assert.doesNotMatch(code, /deleteAllData/, `${p}: an app-wide Web Storage wipe is back — it nukes every profile's library`);
+    assert.doesNotMatch(code, /WebStorage/, `${p}: WebStorage is referenced — there is no per-host API, so any use risks the whole DB`);
+    // clearSiteData must still LOG THE SITE OUT (clear its cookies) — the legitimate half.
+    const at = code.indexOf('public void clearSiteData(');
+    assert.ok(at > 0, `${p}: clearSiteData is gone — re-anchor this guard`);
+    assert.match(javaMethodBody(code, at), /setCookie\(/,
+      `${p}: clearSiteData no longer clears the login cookies — disconnect does nothing`);
+  }
+});
+
 test('the scheduled lock CLOSES the site viewer before it renders (v1.0.45)', () => {
   // The viewer is a native view over the whole app, so nav.reset('locked') would swap the
   // screen UNDERNEATH it and the child would keep browsing with the lock invisible.

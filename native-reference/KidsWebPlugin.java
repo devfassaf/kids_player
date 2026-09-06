@@ -36,7 +36,6 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
-import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
@@ -237,10 +236,22 @@ public class KidsWebPlugin extends Plugin {
     }
 
     /**
-     * Sign out of ONE site. Android's CookieManager has no per-host removal, so the
-     * cookies are expired by name against that host — which is what a real sign-out does
-     * — and the shared DOM/Web storage is cleared alongside. Resolves either way: failing
-     * to find a cookie is an ordinary outcome, not an error (the canDeviceAuth rule).
+     * Sign out of ONE site. Android's CookieManager has no per-host removal, so the cookies
+     * are expired by name against that host — which is what a real sign-out does.
+     *
+     * ⚠️ v1.0.79 — DO NOT CALL `WebStorage.getInstance().deleteAllData()` HERE. It was, and it
+     * WIPED THE ENTIRE APP'S DATABASE: WebStorage is a per-app SINGLETON shared across every
+     * WebView in the process, and `deleteAllData()` clears ALL origins' Web Storage —
+     * including the Capacitor bridge WebView's IndexedDB, where db.js keeps every profile's
+     * whole library. So "disconnect one site" silently deleted all videos of all profiles
+     * (profiles/PIN/settings survived only because they live in native Preferences, not Web
+     * Storage). Reported from the field, and it is a data-loss catastrophe. There is NO
+     * per-host Web Storage API on Android (`deleteOrigin` is deprecated and does not reliably
+     * cover IndexedDB), so we clear the login COOKIES only — the primary auth for a sign-out —
+     * and accept that a purely localStorage-based session may linger. A lingering login is a
+     * far smaller problem than erasing the family's library.
+     *
+     * Resolves either way: failing to find a cookie is an ordinary outcome, not an error.
      */
     @PluginMethod
     public void clearSiteData(PluginCall call) {
@@ -260,7 +271,6 @@ public class KidsWebPlugin extends Plugin {
                     }
                 }
                 cm.flush();
-                WebStorage.getInstance().deleteAllData();
             } catch (Exception ignored) {}
             call.resolve();
         });
