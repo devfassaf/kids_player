@@ -922,7 +922,10 @@ async function tickIdleSleep() {
   // v1.0.76 — and while shrunk into a PiP window, for the same reason turned sideways:
   // the prompt renders inside #player-wrap, and a tap on a PiP window reaches only the
   // system's own controls — a question nobody can answer would just park the video.
-  if ((bgPlayLive && document.hidden) || inPipMode) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
+  // v1.0.77 — and while floating as the in-app mini-player (the user's decision: keep
+  // playing, suspend the timer): the child is present and browsing, and the "עדיין צופים?"
+  // prompt is hidden by the mini CSS anyway, so it would silently park the video.
+  if ((bgPlayLive && document.hidden) || inPipMode || miniActive) { idleLastInputAt = Date.now(); idlePromptAt = 0; return; }
   const afterMin = screenOffMinutes(
     await getSetting(pid, 'screenOffAfterMin', null), SCREEN_OFF_DEFAULT_MIN);
   const st = playbackState();
