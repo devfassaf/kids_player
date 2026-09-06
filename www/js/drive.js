@@ -121,6 +121,34 @@ export function resolveRestoredLibraryId({ ps = null, profileId = '' } = {}) {
   return 'lib:p:' + profileId;
 }
 
+/**
+ * v1.0.80 — PURE: applyRemoteDoc meets a profile that ALREADY has a local sources record.
+ * Should it repoint the scope, and to what? Returns the corrected libraryId, or null to
+ * leave the record untouched.
+ *
+ * The bug this repairs (field-reported): `ensureSources` mints `lib:p:<pid>` the FIRST time a
+ * profile's home renders with no sources record — and if the Drive pull is DELAYED past that
+ * render (the device was signed OUT of Google at launch, so `maybePullDrive` returned
+ * no-token while the home still rendered), the restore's `getSources → continue` then refused
+ * to write the REAL libraryId the backup carries. The videos restore under `lib:<hash>` and
+ * the profile points at an empty `lib:p:<pid>`: full database, empty home — the exact v1.0.38
+ * failure, reached through a new door (a delayed pull instead of a fresh device). The sites
+ * still showed, because `prof:<pid>` is derived straight from the profile id and needs no
+ * mapping — which is the tell.
+ *
+ * It ONLY ever unwinds the auto-mint default, never an established scope:
+ *   • no local record          → null (the fresh-restore branch writes it; not our job).
+ *   • local IS `lib:p:<pid>` AND the doc names a DIFFERENT explicit scope → that scope.
+ *   • local is a legit `lib:p:<pid>` (a v1.0.38+ profile — the doc names the same) → null.
+ *   • local is any OTHER scope (already correct, or a real legacy hash) → null.
+ * So the immutable-scope rule holds: the mint was the mistake, and this only reverses it.
+ */
+export function restoreScopeCorrection({ existing = null, ps = null, profileId = '' } = {}) {
+  if (!existing) return null;
+  const wanted = resolveRestoredLibraryId({ ps, profileId });
+  return existing.libraryId === 'lib:p:' + profileId && wanted !== existing.libraryId ? wanted : null;
+}
+
 export function decidePush({ fileId = null, remoteVersion = null, lastRemoteVersion = '', remoteRead = null } = {}) {
   if (!fileId) return { action: 'create', useRemote: false, reason: 'no-file' };
   if (String(remoteVersion ?? '') === String(lastRemoteVersion || '')) {
@@ -842,7 +870,15 @@ async function applyRemoteDoc(doc) {
   // database. The scope now travels explicitly and resolveRestoredLibraryId decides.
   for (const [pid, ps] of Object.entries(doc.profileSources || {})) {
     if (!ps) continue;
-    if (await getSources(pid)) continue;
+    const existing = await getSources(pid);
+    if (existing) {
+      // v1.0.80 — repair a wrongly-minted default scope (see restoreScopeCorrection). Leaves
+      // an established scope alone; only unwinds the `lib:p:<pid>` ensureSources minted before
+      // a signed-out launch let the pull run. Without it: full database, empty home.
+      const fix = restoreScopeCorrection({ existing, ps, profileId: pid });
+      if (fix) await putSources({ ...existing, libraryId: fix, updatedAt: Date.now() });
+      continue;
+    }
     await putSources({
       profileId: pid, schema: 1, sheetUrl: ps.sheetUrl || null,
       libraryId: resolveRestoredLibraryId({ ps, profileId: pid }),
