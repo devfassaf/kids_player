@@ -2072,6 +2072,17 @@ test('the library SCOPE travels with each profile in the Drive doc (v1.0.38)', (
   assert.match(drive, /libraryId: resolveRestoredLibraryId\(/,
     'the restore no longer routes through the pure resolver');
 
+  // v1.0.80 — the restore must REPAIR a wrongly-minted `lib:p:<pid>` scope, not skip past it.
+  // The old `if (await getSources(pid)) continue` blocked the correction outright: when
+  // ensureSources mints lib:p:<pid> before a signed-out launch lets the pull run, the profile
+  // points at an empty scope forever while the videos sit under lib:<hash> — full database,
+  // empty home (field-reported). applyRemoteDoc must consult restoreScopeCorrection in the
+  // has-a-record branch; a pure helper with no caller is a dead constant (the v1.0.37 rule).
+  assert.match(drive, /restoreScopeCorrection\(\{ existing, ps, profileId: pid \}\)/,
+    'applyRemoteDoc no longer repairs a wrongly-minted scope on restore (v1.0.80)');
+  assert.ok(!/if \(await getSources\(pid\)\) continue;/.test(drive),
+    'the restore reinstated the blocking getSources-continue — a mis-minted scope can never be corrected');
+
   // A migrated entry's sheetUrl must be NULL, and this has to be checked HERE rather than in
   // a unit test: a gdrive.test.mjs case hands serializeDb a hand-built profileSources, so it
   // pins the FIXTURE and not the production expression — the same trap that made

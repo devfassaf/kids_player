@@ -2,7 +2,7 @@
 // safe: commutativity and idempotence. Plus the serialization refusal list.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply, resolveRestoredLibraryId, mergeSiteEntry, mergeDeletedSiteEntries, siteEntryOutlivesTombstone, planSiteApply } from '../www/js/drive.js';
+import { interpretDriveDoc, interpretDriveList, decidePush, mergeChannelForApply, stripPerDeviceChannel, serializeDb, parseDb, mergeDbFiles, mergeLibraryChannel, serializeStateEntry, mergeAppliedState, mergeDeletedChannels, channelOutlivesTombstone, planChannelApply, resolveRestoredLibraryId, restoreScopeCorrection, mergeSiteEntry, mergeDeletedSiteEntries, siteEntryOutlivesTombstone, planSiteApply } from '../www/js/drive.js';
 import { mergeSettings } from '../www/js/settings.js';
 import { mergeVideoRecord, settleCuration } from '../www/js/normalize.js';
 
@@ -664,6 +664,33 @@ test('resolveRestoredLibraryId: the compatibility ladder, and NEVER null', () =>
   assert.equal(resolveRestoredLibraryId({ ps: null, profileId: 'p9' }), 'lib:p:p9');
   assert.equal(resolveRestoredLibraryId({}), 'lib:p:');
   assert.equal(resolveRestoredLibraryId(), 'lib:p:');
+});
+
+test('restoreScopeCorrection: unwinds a wrongly-minted lib:p: scope, never an established one (v1.0.80)', () => {
+  // THE FIELD BUG: a wipe cleared IndexedDB AND signed the app out of Google, so the launch
+  // pull returned no-token while the home still rendered — ensureSources minted `lib:p:<pid>`,
+  // and the later pull's `getSources → continue` refused to write the REAL scope the backup
+  // carries. Videos under `lib:<hash>`, profile pointing at an empty `lib:p:<pid>`.
+  const pid = 'pms8usgfosmhf';
+  // the repair: local is the auto-mint default, the doc names the real legacy hash → repoint.
+  assert.equal(
+    restoreScopeCorrection({ existing: { libraryId: 'lib:p:' + pid }, ps: { libraryId: 'lib:455f348c' }, profileId: pid }),
+    'lib:455f348c');
+  // an OLD doc (sheetUrl, no libraryId) resolves through the ladder and still repoints.
+  const fixed = restoreScopeCorrection({ existing: { libraryId: 'lib:p:' + pid }, ps: { sheetUrl: 'https://docs.google.com/spreadsheets/d/S/edit' }, profileId: pid });
+  assert.match(fixed, /^lib:[0-9a-f]+$/);
+
+  // NEVER touches an established scope:
+  //  • a legitimately lib:p: profile (v1.0.38+, the doc names the same) — no change.
+  assert.equal(restoreScopeCorrection({ existing: { libraryId: 'lib:p:' + pid }, ps: { libraryId: 'lib:p:' + pid }, profileId: pid }), null);
+  assert.equal(restoreScopeCorrection({ existing: { libraryId: 'lib:p:' + pid }, ps: {}, profileId: pid }), null);
+  //  • a scope already correct (a real legacy hash locally) — no change, even if the doc differs.
+  assert.equal(restoreScopeCorrection({ existing: { libraryId: 'lib:455f348c' }, ps: { libraryId: 'lib:455f348c' }, profileId: pid }), null);
+  assert.equal(restoreScopeCorrection({ existing: { libraryId: 'lib:deadbeef' }, ps: { libraryId: 'lib:455f348c' }, profileId: pid }), null,
+    'a non-default local scope is NEVER overwritten — only the auto-mint default is a mistake');
+  //  • no local record at all → null (the fresh-restore branch owns that case).
+  assert.equal(restoreScopeCorrection({ existing: null, ps: { libraryId: 'lib:455f348c' }, profileId: pid }), null);
+  assert.equal(restoreScopeCorrection(), null);
 });
 
 test('profileSources carries the SCOPE, and a migrated entry keeps sheetUrl falsy', () => {
