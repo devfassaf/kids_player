@@ -2992,6 +2992,27 @@ export function siteLockGrain(answer) {
 }
 
 /**
+ * v1.0.78 — PURE: does the parent's answer allow EXTERNAL CONTENT on an approved site?
+ *
+ * The reported bug (anafeam-kids.co.il): a curated kids' video site plays its videos from a
+ * CDN on ANOTHER host (BunnyCDN `*.b-cdn.net`), and those segments are third-party
+ * SUBRESOURCES — refused by default, so the video silently never loads. Allowing external
+ * content (per rule) is what lets them through. The parent-screen add already asked this;
+ * the child's blocked-page approval did NOT, so a parent could approve the page and still
+ * never see a video.
+ *
+ * Both doors now map their three-way answer HERE, so the two can never drift: 'third' (the
+ * secondary button) = WITH external content; 'ok' (the primary, safe button) = WITHOUT;
+ * anything else — cancel, a scrim dismiss — is 'cancel' and adds NOTHING (the safe direction,
+ * exactly as the add dialog has always treated a dismiss).
+ */
+export function externalContentChoice(answer) {
+  if (answer === 'third') return 'with';
+  if (answer === 'ok') return 'without';
+  return 'cancel';
+}
+
+/**
  * PURE: minutes for a new lock. 0 is a real answer ("until I unlock it"), so it must
  * survive; anything unusable falls back to the remembered value and then to 0 — the
  * planRejectedPurge rule (a typo must never invent a short lock the parent did not ask

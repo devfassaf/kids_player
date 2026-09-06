@@ -45,7 +45,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   channelSyncModeDialog, channelSyncModeOutcome,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
   isCustomFolder, planFolderDeletion, planDriveFolderImport, planDriveTreeImport, driveFolderOutcome,
-  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText, relockChoice, siteLockGrain,
+  evalContainment, containmentChrome, normalizeLockMinutes, containConfirmText, relockChoice, siteLockGrain, externalContentChoice,
   folderAncestry, folderSubtreeIds, folderWithinLock, homeFolderRows, folderPageSlots, folderPageTotal } from './plan.js';
 import { makePager } from './ui/pager.js';
 import { attachSwipePager } from './ui/swipe.js';
@@ -2449,11 +2449,45 @@ async function onSiteAddRequest(url) {
 }
 
 /**
+ * v1.0.78 — THE ONE explanation of what "external content" means, so every approval door
+ * (the parent-screen add AND the child's blocked-page flow AND the per-rule toggle) words it
+ * identically. Names VIDEOS first, because that is the common reason a page needs it — a
+ * curated kids' video site (anafeam-kids, and its kind) plays its videos from a CDN on
+ * another host, so without this the video silently never loads and the site looks broken.
+ */
+const SITE_EXTERNAL_EXPLAIN =
+  'הרבה אתרי וידאו מנגנים את הסרטונים משרת אחר, ולכן בלי "תוכן חיצוני" ייתכן שסרטונים לא\n'
+  + 'יתנגנו בכלל וחלקים מהדף יחסרו. המחיר: הדף יוכל לטעון גם פרסומות ותמונות מאתרים אחרים.\n'
+  + 'אפשר לשנות בכל רגע ברשימת האתרים המורשים.';
+
+/**
+ * v1.0.78 — the SECOND step of an approval: allow external content? Reused by the blocked-page
+ * flow (below) so it has parity with the parent-screen add. Returns the pure decision
+ * ('with' | 'without' | 'cancel'); the SAFE answer is the primary button, and a dismiss adds
+ * nothing.
+ */
+async function askExternalContent(display) {
+  return externalContentChoice(await askKid({
+    emoji: '🎬',
+    title: 'לאפשר סרטונים ותוכן מאתרים אחרים?',
+    text: display + '\n\n' + SITE_EXTERNAL_EXPLAIN,
+    ok: 'בלי תוכן חיצוני',
+    third: 'עם תוכן חיצוני — כדי שסרטונים יעבדו',
+    cancel: 'ביטול'
+  }));
+}
+
+/**
  * Which slice of the site does the parent mean to allow? NEVER guess "the whole site":
  * the child hit one link, and silently opening a whole domain is more than was asked.
  * The default is the narrowest grain that still leaves the site usable (its section), and
  * the whole site is the deliberate second button. A single page can be added by pasting
  * its exact address in the panel — offering it here would just block the next tap.
+ *
+ * v1.0.78 — then a SECOND question: allow external content? Without it the grain is
+ * approved but a CDN-hosted video (the anafeam-kids case) is still silently blocked, so the
+ * parent approves "the page" and never sees a video. `askKid` gives only three buttons, so
+ * the two axes (which slice × external content) cannot share one dialog.
  */
 async function askSiteRuleGrain(url, cands) {
   const opts = cands.options;
@@ -2470,8 +2504,12 @@ async function askSiteRuleGrain(url, cands) {
   });
   const chosen = answer === 'ok' ? def : answer === 'third' ? wide : null;
   if (!chosen) return;
-  const res = await addSiteRule(chosen.canon);
-  toast(res.ok ? 'האתר אושר ✅' : res.message);
+  const ext = await askExternalContent(chosen.canon.display);
+  if (ext === 'cancel') return; // backed out of the second question — approve nothing
+  const res = await addSiteRule(chosen.canon, { allowExternal: ext === 'with' });
+  toast(res.ok
+    ? (ext === 'with' ? 'האתר אושר ✅ (עם תוכן חיצוני)' : 'האתר אושר ✅')
+    : res.message);
   await refreshSitesPanel();
   // Straight back to the page they were on — a fix that dumps the parent somewhere else
   // makes them redo the navigation just to check it worked.
@@ -4759,8 +4797,11 @@ async function refreshSitesPanel() {
     cb.checked = !!rec.allowExternal;
     cb.addEventListener('change', async () => {
       if (cb.checked && !await confirmKid({
-        emoji: '⚠️', title: 'לאפשר תוכן חיצוני?',
-        text: 'הדפים באתר הזה יוכלו לטעון פרסומות, סרטונים מוטמעים ותמונות מאתרים אחרים. הילד עלול לראות תוכן שאף אחד לא אישר. להפעיל רק אם האתר נראה שבור.'
+        emoji: '🎬', title: 'לאפשר סרטונים ותוכן מאתרים אחרים?',
+        // v1.0.78 — the SAME wording as the add dialogs, and it names VIDEOS first: a parent
+        // whose video silently will not play must recognise THIS as the switch, not read it
+        // as a scary last resort ("only if broken" sent them hunting elsewhere).
+        text: rec.display + '\n\n' + SITE_EXTERNAL_EXPLAIN
       })) { cb.checked = false; return; }
       await db.putSiteEntry({ ...rec, allowExternal: cb.checked });
       await loadSiteEntries();
@@ -4839,15 +4880,15 @@ async function runSiteAdd(kind, raw, inputId, msg) {
     title: kind === 'shortcut' ? 'להוסיף את האתר?' : 'לאשר את הכתובת?',
     text: (changed ? 'הכתובת מפנה אל:\n' : '') + finalCanon.display
       + (kind === 'shortcut' ? '\n\nהילד יוכל לגלוש בכל הכתובות שמתחילות כך.' : '')
-      + '\n\nתוכן חיצוני = סרטונים מוטמעים, תמונות ופרסומות מאתרים אחרים.'
-      + '\nבלעדיו בטוח יותר, אבל ייתכן שסרטונים לא יתנגנו וחלקים מהדף יחסרו.'
-      + '\nאפשר לשנות בכל רגע ברשימת האתרים המורשים.',
+      + '\n\n' + SITE_EXTERNAL_EXPLAIN,
     ok: 'הוספה — בלי תוכן חיצוני',
     third: 'הוספה — עם תוכן חיצוני',
     cancel: 'ביטול'
   });
-  if (answer !== 'ok' && answer !== 'third') { msg.textContent = ''; return; }
-  const allowExternal = answer === 'third';
+  // v1.0.78 — the SAME pure mapping the blocked-page flow uses, so the two doors cannot drift.
+  const choice = externalContentChoice(answer);
+  if (choice === 'cancel') { msg.textContent = ''; return; }
+  const allowExternal = choice === 'with';
   const res = kind === 'shortcut'
     ? await addSiteShortcut(probe.url, { title: probe.title, iconUrl: probe.iconUrl, allowExternal })
     : await addSiteRule(finalCanon, { allowExternal });

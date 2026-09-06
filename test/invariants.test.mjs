@@ -2943,9 +2943,10 @@ test('the add flow ASKS about external content, and the answer reaches the rule 
   const body = app.slice(at, app.indexOf('\n}\n', at));
   assert.match(body, /askKid\(/, 'the add confirm is not a three-way question any more');
   assert.match(body, /third:/, 'there is no "with external content" answer');
-  assert.match(body, /answer !== 'ok' && answer !== 'third'/,
-    'an accidental dismiss must add NOTHING — the v1.0.23 rule');
-  assert.match(body, /allowExternal = answer === 'third'/, 'the answer is not read');
+  // v1.0.78 — both doors map their answer through the ONE pure decision, so they cannot drift.
+  assert.match(body, /externalContentChoice\(answer\)/, 'the add door bypasses the shared mapping');
+  assert.match(body, /choice === 'cancel'/, 'an accidental dismiss must add NOTHING — the v1.0.23 rule');
+  assert.match(body, /allowExternal = choice === 'with'/, 'the answer is not read');
   assert.match(body, /addSiteShortcut\([^)]*allowExternal/s, 'the shortcut door drops the answer');
   assert.match(body, /addSiteRule\(finalCanon, \{ allowExternal \}\)/, 'the rule door drops the answer');
   // and the rule a shortcut auto-creates must inherit it, or saying yes changes nothing
@@ -2953,8 +2954,20 @@ test('the add flow ASKS about external content, and the answer reaches the rule 
   assert.match(sc, /addSiteRule\(canon, \{ allowExternal \}\)/,
     'the auto-created rule ignores the answer — the parent says yes and the page stays strict');
   // the SAFE answer must be the primary button
-  const okIdx = body.indexOf("ok: 'הוספה — בלי");
-  assert.ok(okIdx > 0, 'the primary button is no longer the strict one');
+  assert.ok(body.indexOf("ok: 'הוספה — בלי") > 0, 'the primary button is no longer the strict one');
+
+  // ⚠️ v1.0.78 — THE CHILD'S BLOCKED-PAGE APPROVAL MUST ALSO GRANT EXTERNAL CONTENT. The
+  // reported bug: a curated kids' video site plays its videos from a CDN, and approving the
+  // page from the child's screen produced a STRICT rule, so the video silently never loaded.
+  const grain = fnSlice(app, 'async function askSiteRuleGrain(');
+  assert.match(grain, /askExternalContent\(/, 'the blocked-page approval never asks about external content');
+  assert.match(grain, /addSiteRule\(chosen\.canon, \{ allowExternal: ext === 'with' \}\)/,
+    'the blocked-page approval drops the external-content answer — the anafeam bug');
+  const ext = fnSlice(app, 'async function askExternalContent(');
+  assert.match(ext, /externalContentChoice\(/, 'the external-content dialog bypasses the shared mapping');
+  // both doors AND the per-rule toggle word it identically (the one explanation constant)
+  assert.equal((app.match(/SITE_EXTERNAL_EXPLAIN/g) || []).length >= 4, true,
+    'the external-content wording is not shared across the three doors — it will drift');
 });
 
 test('a landed pull redraws the surface the parent is ON, not just the home (v1.0.49)', () => {
