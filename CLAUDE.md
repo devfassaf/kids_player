@@ -273,6 +273,40 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.78 — **A CDN-HOSTED VIDEO ON AN APPROVED SITE PLAYS NOW** (field report:
+  anafeam-kids.co.il — "האתר נוסף אבל לא הצלחתי לראות שום סרטון … למרות שאישרתי את הדף ואת
+  התוכן שלו").
+  - **ROOT CAUSE, MEASURED IN THE BROWSER**: the site's videos are a `<video>` playing an
+    HLS `.m3u8` from a CDN on ANOTHER host (BunnyCDN `*.b-cdn.net`) — so the playlist and its
+    segments are third-party SUBRESOURCES, refused by the strict default. ⚠️ **Not a
+    navigation** (there is no "הורים" blocked page for it) — `shouldInterceptRequest` returns
+    an empty 200 and the video just silently never loads. Allowing external content per rule
+    (`weblock.subresourceAllowed` → `gov.allowExternal`) is the ONLY thing needed: I
+    simulated Android System WebView (no native HLS) and the site FALLS BACK TO MSE and plays
+    (MSE is supported in modern WebView), so no native player is required.
+  - **THE CHILD'S BLOCKED-PAGE APPROVAL COULD NOT GRANT IT.** The parent-screen add (v1.0.48)
+    asked about external content, but `askSiteRuleGrain` (the "child hit a wall → הורים →
+    code" door) only asked WHICH SLICE (page/section/whole-site) and called
+    `addSiteRule(chosen.canon)` with no `allowExternal` — so a parent approved the page and
+    the video stayed blocked. Now it adds a SECOND step (user decision 2026-09-06:
+    `askKid` has only three buttons, so the two axes — slice × external content — cannot
+    share one dialog): the grain, then "לאפשר סרטונים ותוכן מאתרים אחרים?".
+  - **BOTH DOORS MAP THEIR ANSWER THROUGH ONE PURE DECISION** (`plan.externalContentChoice`
+    → 'with' | 'without' | 'cancel') so they cannot drift; 'third' = with, 'ok' (the safe
+    primary) = without, a dismiss adds NOTHING (the v1.0.23 rule). And all THREE surfaces —
+    the parent-screen add, the blocked-page step, and the per-rule toggle — now word it with
+    ONE shared constant (`SITE_EXTERNAL_EXPLAIN`) that **names VIDEOS first**: the toggle's
+    old "רק אם האתר נראה שבור" sent a parent whose video silently would not play hunting
+    elsewhere, when for a video site external content is the NORMAL requirement.
+  - The existing per-rule toggle (Parent → approved sites) already fixes an ALREADY-added
+    rule; it was just undiscoverable, hence the reframed wording.
+  - 1 unit test (`externalContentChoice`) + 1 weblock test (the exact CDN-subresource case) +
+    the v1.0.48 guard extended to pin the blocked-page door, every guard proven red on a
+    planted regression (5). Browser-verified end to end through the real PIN gate with a
+    stubbed viewer: the blocked-page flow's two steps, "עם תוכן חיצוני" storing a whole-site
+    rule with `allowExternal:true` and reopening the viewer with it, and "בלי" storing
+    `false`. **The actual video playing in the native WebView is a DEVICE checklist item.**
+
 - v1.0.77 — **BACK FLOATS THE VIDEO INTO AN IN-APP MINI-PLAYER** (user request: keep
   browsing the app while the video plays in a small draggable window, like minimizing INSIDE
   the YouTube app). The BACK companion to v1.0.76's HOME→OS-PiP, and a genuinely DIFFERENT

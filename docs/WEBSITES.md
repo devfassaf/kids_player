@@ -109,6 +109,18 @@ url + title + iconUrl         host + port + segments[] + allowExternal
 הכל ב-`weblock.ruleCandidatesFor`, טהור ובדוק. `defaultIndex` **אסור** שיצביע על
 `whole-site`: הילד לחץ על קישור אחד, ופתיחת דומיין שלם היא יותר ממה שנשאל.
 
+### תוכן חיצוני = סרטונים מ-CDN (v1.0.78)
+⚠️ **הרבה אתרי וידאו מנגנים את הסרטון (HLS `.m3u8` + segments) מ-host אחר** — anafeam-kids
+מנגן מ-BunnyCDN (`*.b-cdn.net`). זה **subresource**, לא ניווט, אז `shouldInterceptRequest`
+מחזיר 200 ריק והסרטון פשוט לא נטען — **בלי דף חסום ובלי כפתור "הורים"**. הפתרון היחיד:
+`allowExternal` על הכלל (‏`subresourceAllowed` → `gov.allowExternal`). ‏MSE נתמך ב-WebView,
+אז הסרטון מתנגן ברגע שה-segments לא נחסמים — אין צורך בנגן native (נמדד בדפדפן: כשאין HLS
+מובנה, האתר נופל ל-MSE ומנגן).
+**שני דלתות אישור, מיפוי אחד:** `plan.externalContentChoice` (‏third→with, ok→without,
+אחרת→cancel). מסך ההורים (`runSiteAdd`) והדף החסום (`askSiteRuleGrain` → `askExternalContent`,
+שלב שני) שניהם עוברים דרכו, ושלושת המקומות (השניים + מתג הכלל) משתמשים ב-`SITE_EXTERNAL_EXPLAIN`
+היחיד — **ששם קודם "סרטונים"**, כי לילד עם וידאו שלא מתנגן זה לא "שבור", הסרטון פשוט חסר.
+
 ### נעילת containment על אתר / על דף (v1.0.76)
 נעילת 'site' יש לה **גרעין** (`siteGrain`): `'host'` = כל האתר המאושר (התנהגות v1.0.67,
 ברירת המחדל הבטוחה), `'prefix'` = הדף הנעול ותתי-הדפים שלו בלבד. הצמצום הוא ב-`weblock`:
