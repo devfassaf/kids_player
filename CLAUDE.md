@@ -273,6 +273,46 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.79 — ⚠️ **DISCONNECTING ONE SITE WIPED EVERY PROFILE'S LIBRARY — THE WORST
+  DATA-LOSS BUG THE APP HAS SHIPPED** (field report: "באג שמחק לי את כל הרשימות של הסרטונים
+  מכל הפרופילים ואני לא רואה שום סרטון בשום פרופיל"). The parent pressed a site's **"ניתוק"**
+  (disconnect) button, then the **"הסר"** (remove) button, and every profile came back empty.
+  - **ROOT CAUSE: `clearSiteData` CALLED `WebStorage.getInstance().deleteAllData()`.**
+    `WebStorage` is a **per-app SINGLETON** shared across every WebView in the process, and
+    `deleteAllData()` clears **ALL origins'** Web Storage — including the Capacitor bridge
+    WebView's IndexedDB, where `db.js` keeps every profile's whole library. So "disconnect
+    ONE site" silently deleted **all videos of all profiles**. Profiles, the PIN and settings
+    survived only because they live in native Preferences, not Web Storage — which is exactly
+    why the report was "empty profiles", not "no profiles". The culprit is **ניתוק**, not הסר.
+  - **THE FIX: `clearSiteData` NOW CLEARS ONLY THE HOST'S LOGIN COOKIES, AND TOUCHES NOTHING
+    ELSE.** There is NO per-host Web Storage API on Android (`deleteOrigin` is deprecated and
+    does not reliably cover IndexedDB), so the honest scope of a "log out of this site" is the
+    host's cookies — the primary auth — expired by name against `https://host`, `https://.host`
+    and `https://www.host`, then `flush()`ed. A purely localStorage-based session may linger;
+    a lingering login is incomparably smaller than erasing the family's library. The `import
+    android.webkit.WebStorage;` is gone from both java copies.
+  - **THE BUTTON IS RELABELLED `התנתקות` (log out), NOT `ניתוק`**, and its confirm now says
+    what actually happens: "הכניסה (login) שלך ל-<host> תימחק … הסרטונים והרשימות לא ייפגעו".
+    The old label + "החיבור והנתונים … יימחקו" READ LIKE A DELETE, which is how a parent
+    trying to remove a site reached for the one control that could destroy their library.
+  - **הסר WAS NEVER BUGGY.** The 🗑️/"הסר" button on a site row is `removeSiteEntry` →
+    `db.deleteSiteEntry` — it removes ONE `siteEntries` row and writes its tombstone; it never
+    touches videos. The data loss was entirely `ניתוק`; pressing הסר afterwards only removed
+    the (now-harmless) site entry. There are two lists and thus three controls, deliberately:
+    **התנתקות** (log out of a site — clear its login), **🗑️ on a shortcut** (remove the child's
+    TILE, the address stays approved for browsing), **🗑️ on a rule** (remove the browsing
+    permission itself).
+  - ⚠️ **THE DOCS HAD DOCUMENTED THE CATASTROPHE AS A FEATURE.** `docs/WEBSITES.md §8` read
+    "clearSiteData is not surgical … the shared DOM storage is entirely deleted" — describing
+    a whole-app wipe as a known limitation of a per-site button. Rewritten as the invariant.
+    (The v1.0.64 lesson, inverted: a documented failure mode was not merely not-a-success —
+    it was a live data-loss path nobody had read as one.)
+  - **PURE-JAVA CHANGE, NO NODE TEST CAN EXECUTE IT** — so 1 invariants guard (both java
+    copies, comment-stripped): `WebStorage`/`deleteAllData` banned ANYWHERE in the plugin, and
+    `clearSiteData` must still `setCookie(` (disconnect must still log out). All three
+    assertions proven red on a planted regression (the wipe reintroduced, a deprecated
+    `deleteOrigin` proving the `WebStorage` ban is independent, and the cookie-clear removed).
+    Java recompiles. **The actual on-device disconnect is a DEVICE checklist item.**
 - v1.0.78 — **A CDN-HOSTED VIDEO ON AN APPROVED SITE PLAYS NOW** (field report:
   anafeam-kids.co.il — "האתר נוסף אבל לא הצלחתי לראות שום סרטון … למרות שאישרתי את הדף ואת
   התוכן שלו").
