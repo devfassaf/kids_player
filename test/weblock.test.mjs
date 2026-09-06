@@ -177,6 +177,20 @@ test('subresourceAllowed: allowExternal opens only the pages its own rule govern
     'the other site must stay strict');
 });
 
+test('subresourceAllowed: a CDN video segment is the anafeam-kids case (v1.0.78)', () => {
+  // The reported bug: a curated kids' video site plays its videos (HLS .m3u8 + segments) from
+  // a CDN on ANOTHER host (BunnyCDN *.b-cdn.net). Those are third-party SUBRESOURCES, so with
+  // a strict rule the video silently never loads — approving the page is not enough.
+  const page = 'https://anafeam-kids.co.il/watch/creation-001';
+  const seg = 'https://vz-d344d956-efc.b-cdn.net/38f60ba8/playlist.m3u8';
+  const strict = [ruleFor('https://anafeam-kids.co.il/', { allowExternal: false })];
+  assert.equal(subresourceAllowed(strict, page, seg), false, 'strict blocks the CDN — the silent failure');
+  const open = [ruleFor('https://anafeam-kids.co.il/', { allowExternal: true })];
+  assert.equal(subresourceAllowed(open, page, seg), true, 'external content lets the video segments through');
+  // the site s own API (same host) is fine either way — that is where the signed URL comes from
+  assert.equal(subresourceAllowed(strict, page, 'https://anafeam-kids.co.il/api/token'), true);
+});
+
 // ── ruleCandidatesFor ──────────────────────────────────────────────────────────────
 
 test('ruleCandidatesFor: offers whole-site / section / page, defaulting to the section', () => {

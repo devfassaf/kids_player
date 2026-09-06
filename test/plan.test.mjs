@@ -12,7 +12,8 @@ import {
   playlistVideoFolder, planRejectedPurge, shareOutcome, SHARE_REASONS,
   planChannelSections, NEW_CHANNEL_WINDOW_MS, planLogoCache, logoFirstPaint, planLogoDelivery,
   effectiveCaps, sourceDrops, keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys, pruneConfirmText,
-  favActive, mergeFavState, favouriteKeys, pinKeyAction, lockScreenContainment
+  favActive, mergeFavState, favouriteKeys, pinKeyAction, lockScreenContainment,
+  externalContentChoice
 } from '../www/js/plan.js';
 
 import { MAX_ITEMS_TOTAL, MAX_ITEMS_PER_CHANNEL } from '../www/js/config.js';
@@ -2647,4 +2648,19 @@ test('rulesForLockedSite: a narrowing, never a widening (v1.0.67)', async () => 
   assert.deepEqual(rulesForLockedSite(rules, 'https://nowhere.example.com/'), []);
   assert.deepEqual(rulesForLockedSite([], 'https://kids.example.com/'), []);
   assert.deepEqual(rulesForLockedSite(rules, 'not a url'), []);
+});
+
+test('externalContentChoice: the two approval doors map their answer identically (v1.0.78)', () => {
+  // The reported bug: a CDN-hosted video (anafeam-kids) silently would not play because the
+  // page's approval never granted external content. Both doors now map their three-way answer
+  // HERE so they cannot drift.
+  assert.equal(externalContentChoice('third'), 'with', 'the secondary button allows external content');
+  assert.equal(externalContentChoice('ok'), 'without', 'the primary (safe) button keeps it strict');
+  // anything that is NOT an explicit answer adds NOTHING — the safe direction, exactly as the
+  // add dialog has always treated a dismiss.
+  assert.equal(externalContentChoice('cancel'), 'cancel');
+  assert.equal(externalContentChoice('dismiss'), 'cancel');
+  assert.equal(externalContentChoice(''), 'cancel');
+  assert.equal(externalContentChoice(undefined), 'cancel');
+  assert.equal(externalContentChoice(null), 'cancel');
 });
