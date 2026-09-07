@@ -2940,6 +2940,29 @@ test('nothing touches the WebView from the off-thread request hook (v1.0.45)', (
   }
 });
 
+test('media plays on an approved page — the native subresource filter mirrors weblock (v1.0.83)', () => {
+  // anafeam-kids: a <video> streams HLS from a CDN on another host, a third-party SUBRESOURCE
+  // that failed SILENTLY under a strict rule (no blocked page — the child saw a dead player and
+  // nobody was told). v1.0.83 allows MEDIA from any host on an approved page. The ENFORCEMENT is
+  // native (shouldInterceptRequest → subresourceAllowed, off-thread, untestable by node), so the
+  // native side must carry the same allowance the JS spec (weblock.subresourceAllowed) does, or
+  // it works in the browser sim and fails on device (the v1.0.78 trap).
+  const jsHelp = fnSlice(CODE.get('www/js/weblock.js'), 'export function subresourceAllowed(');
+  assert.match(jsHelp, /isMediaUrl\(/, 'weblock.subresourceAllowed no longer allows media');
+  assert.match(CODE.get('www/js/weblock.js'), /MEDIA_EXT\s*=\s*\/[^\n]*m3u8[^\n]*ts[^\n]*\/i/,
+    'the JS media-extension list lost its HLS extensions');
+  for (const p of JAVA_PAIRS) {
+    const code = readRepoCode(p);
+    const at = code.indexOf('private boolean subresourceAllowed(');
+    assert.ok(at > 0, `${p}: subresourceAllowed is gone`);
+    assert.match(javaMethodBody(code, at), /isMediaUrl\(u\)/,
+      `${p}: the native subresource filter no longer allows media — the CDN video is blocked on device (v1.0.83)`);
+    // the native media-extension list must actually carry the streaming extensions
+    assert.match(code, /MEDIA_EXT[\s\S]{0,200}m3u8[\s\S]{0,120}\bts\b[\s\S]{0,120}m4s/,
+      `${p}: the native MEDIA_EXT list is missing HLS/DASH extensions`);
+  }
+});
+
 test('the site viewer implements HTML5 fullscreen, and back leaves it first (v1.0.45)', () => {
   // A bare WebView does not implement fullscreen AT ALL — without onShowCustomView the
   // fullscreen button on an embedded player does nothing whatsoever, which is how this

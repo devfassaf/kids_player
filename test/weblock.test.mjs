@@ -7,7 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  canonicalSitePrefix, navAllowed, matchRule, subresourceAllowed,
+  canonicalSitePrefix, navAllowed, matchRule, subresourceAllowed, isMediaUrl,
   ruleCandidatesFor, ruleIdFor, shortcutIdFor, extractSiteIconFromHtml,
   rulesForLockedSite, rulesForLockedPage
 } from '../www/js/weblock.js';
@@ -177,18 +177,45 @@ test('subresourceAllowed: allowExternal opens only the pages its own rule govern
     'the other site must stay strict');
 });
 
-test('subresourceAllowed: a CDN video segment is the anafeam-kids case (v1.0.78)', () => {
-  // The reported bug: a curated kids' video site plays its videos (HLS .m3u8 + segments) from
-  // a CDN on ANOTHER host (BunnyCDN *.b-cdn.net). Those are third-party SUBRESOURCES, so with
-  // a strict rule the video silently never loads — approving the page is not enough.
+test('subresourceAllowed: a CDN video plays on an approved page even under a strict rule (v1.0.83)', () => {
+  // The anafeam-kids case: a curated kids' video site plays its videos (HLS .m3u8 + segments)
+  // from a CDN on ANOTHER host (BunnyCDN *.b-cdn.net). Those are third-party SUBRESOURCES, so
+  // under v1.0.78 a STRICT rule blocked them and the video failed SILENTLY (a subresource, not a
+  // navigation — no blocked page, no prompt). v1.0.83: MEDIA is allowed from any host on an
+  // approved page, so the video just plays — parent never has to find a per-site toggle.
   const page = 'https://anafeam-kids.co.il/watch/creation-001';
-  const seg = 'https://vz-d344d956-efc.b-cdn.net/38f60ba8/playlist.m3u8';
+  const manifest = 'https://vz-d344d956-efc.b-cdn.net/38f60ba8/playlist.m3u8?bcdn_token=abc&expires=1';
+  const segment = 'https://vz-d344d956-efc.b-cdn.net/38f60ba8/720p/video.m4s?token=z';
   const strict = [ruleFor('https://anafeam-kids.co.il/', { allowExternal: false })];
-  assert.equal(subresourceAllowed(strict, page, seg), false, 'strict blocks the CDN — the silent failure');
-  const open = [ruleFor('https://anafeam-kids.co.il/', { allowExternal: true })];
-  assert.equal(subresourceAllowed(open, page, seg), true, 'external content lets the video segments through');
-  // the site s own API (same host) is fine either way — that is where the signed URL comes from
+  assert.equal(subresourceAllowed(strict, page, manifest), true, 'the HLS manifest plays on the approved page');
+  assert.equal(subresourceAllowed(strict, page, segment), true, 'and so do its segments');
+  // but a NON-media third-party subresource on the same strict page is still blocked — media
+  // only, not scripts/trackers/embeds.
+  assert.equal(subresourceAllowed(strict, page, 'https://vz-d344d956-efc.b-cdn.net/track.js'), false,
+    'a script from the CDN is NOT media — still blocked');
+  assert.equal(subresourceAllowed(strict, page, 'https://doubleclick.net/ad.js'), false, 'trackers still blocked');
+  // the site's own API (same host) is fine as before — that is where the signed URL comes from
   assert.equal(subresourceAllowed(strict, page, 'https://anafeam-kids.co.il/api/token'), true);
+  // ...and MEDIA is only auto-allowed on an APPROVED page: with no governing rule, no free pass.
+  assert.equal(subresourceAllowed([], 'https://nope.com/x', manifest), false,
+    'media is allowed only when the page itself is governed by an approved rule');
+});
+
+// ── isMediaUrl ───────────────────────────────────────────────────────────────────────
+test('isMediaUrl: streams/files by path extension, never by query text (v1.0.83)', () => {
+  // HLS/DASH, progressive AV, keys and captions — the whole playback set.
+  for (const u of [
+    'https://c.b-cdn.net/x/playlist.m3u8', 'https://c/x/manifest.mpd', 'https://c/seg-001.ts',
+    'https://c/720p/video.m4s', 'https://c/movie.mp4', 'https://c/clip.webm', 'https://c/song.mp3',
+    'https://c/a.m4a', 'https://c/a.aac', 'https://c/a.ogg', 'https://c/enc.key', 'https://c/subs.vtt',
+    'https://c/x/playlist.m3u8?bcdn_token=abc&expires=1', 'https://c/seg.ts#frag'
+  ]) assert.equal(isMediaUrl(u), true, u);
+  // NOT media: scripts, images, docs, and — the trap — a media name that lives only in the QUERY.
+  for (const u of [
+    'https://c/app.js', 'https://c/a.png', 'https://c/style.css', 'https://c/page.html',
+    'https://c/embed/x', 'https://tracker/pixel.gif?ref=video.mp4', 'https://c/x.mp4x',
+    'https://c/foo.m3u8/redirect', ''
+  ]) assert.equal(isMediaUrl(u), false, u);
 });
 
 // ── ruleCandidatesFor ──────────────────────────────────────────────────────────────

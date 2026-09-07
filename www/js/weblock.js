@@ -270,6 +270,16 @@ export function subresourceAllowed(rules, pageUrl, resUrl) {
   const t = targetOf(res);
   if (!t) return false; // non-https subresource: refused like every other non-https URL
 
+  // v1.0.83 — MEDIA PLAYS ON ANY APPROVED SITE (user decision 2026-09-07). A <video>/<audio>
+  // on a page the parent approved commonly streams from a CDN on ANOTHER host (anafeam's HLS
+  // .m3u8 + segments from *.b-cdn.net), which the strict default blocks — and because it is a
+  // subresource, not a navigation, it fails SILENTLY (no blocked page, no prompt): the child
+  // sees a dead player and nobody is told why. The stream IS the site's own content, so media
+  // is allowed from any https host WHEN the page itself is governed by an approved rule.
+  // Scripts, trackers, analytics pixels and embedded players carry no media extension and stay
+  // blocked; navigation is untouched, so the child can still only ever BE on an approved page.
+  if (governing && isMediaUrl(res)) return true;
+
   const hosts = [];
   const page = targetOf(pageUrl);
   if (page) hosts.push(page.host);
@@ -278,6 +288,21 @@ export function subresourceAllowed(rules, pageUrl, resUrl) {
     if (h) hosts.push(h);
   }
   return hosts.some((h) => t.host === h || t.host.endsWith('.' + h));
+}
+
+/**
+ * v1.0.83 — PURE: does this URL name a media STREAM/FILE (by extension)? Lets a <video>/<audio>
+ * on an approved page fetch its stream from any host (see subresourceAllowed). The extension is
+ * checked at the END OF THE PATH, before any `?token`/`#frag`, so a signed HLS URL
+ * (`…/playlist.m3u8?bcdn_token=…`) matches while a tracker whose QUERY merely mentions a media
+ * name (`…/pixel.gif?ref=video.mp4`) does NOT. Covers HLS/DASH manifests + segments, progressive
+ * video/audio, HLS keys and WebVTT captions — never scripts, so ads/trackers stay blocked. The
+ * native KidsWebPlugin.isMediaUrl mirrors this list.
+ */
+const MEDIA_EXT = /\.(?:m3u8|mpd|ts|m4s|mp4|m4v|mov|webm|ogv|m4a|mp3|aac|ogg|oga|opus|wav|flac|key|vtt)$/i;
+export function isMediaUrl(url) {
+  const path = String(url ?? '').split('#')[0].split('?')[0];
+  return MEDIA_EXT.test(path);
 }
 
 /**

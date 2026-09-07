@@ -689,6 +689,12 @@ public class KidsWebPlugin extends Plugin {
         Uri page = (pageUrl != null && !pageUrl.isEmpty()) ? Uri.parse(pageUrl) : null;
         Rule gov = governing(page);
         if (gov != null && gov.allowExternal) return true;
+        // v1.0.83 — MEDIA plays on any APPROVED page (mirror of weblock.isMediaUrl). A
+        // <video>/<audio> streaming from a CDN on another host (anafeam's HLS from *.b-cdn.net)
+        // is the site's own content, and it fails SILENTLY here (a subresource, not a
+        // navigation — no blocked page). Scripts/trackers carry no media extension and stay
+        // blocked; navigation is untouched, so the child can only ever BE on an approved page.
+        if (gov != null && isMediaUrl(u)) return true;
 
         String host = u.getHost();
         if (host == null) return false;
@@ -705,6 +711,17 @@ public class KidsWebPlugin extends Plugin {
             if (host.equals(h) || host.endsWith("." + h)) return true;
         }
         return false;
+    }
+
+    // v1.0.83 — media extensions, the mirror of weblock.MEDIA_EXT. Anchored at the END of the
+    // PATH: Uri.getPath() already excludes the ?query, so a signed `…/playlist.m3u8?token`
+    // matches while a tracker whose query merely mentions `video.mp4` does not.
+    private static final java.util.regex.Pattern MEDIA_EXT = java.util.regex.Pattern.compile(
+        "\\.(m3u8|mpd|ts|m4s|mp4|m4v|mov|webm|ogv|m4a|mp3|aac|ogg|oga|opus|wav|flac|key|vtt)$",
+        java.util.regex.Pattern.CASE_INSENSITIVE);
+    private boolean isMediaUrl(Uri u) {
+        String p = u.getPath();
+        return p != null && MEDIA_EXT.matcher(p).find();
     }
 
     /**
