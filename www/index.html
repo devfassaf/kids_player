@@ -762,6 +762,15 @@
           <input id="resume-toggle" type="checkbox" />
           <span>להמשיך סרטון מהנקודה שבה הפסקנו (במקום מההתחלה)<b id="resume-owner" class="setting-owner"></b></span>
         </label>
+        <!-- v1.0.86: open-in-fullscreen. ON by default (checked) — today's behaviour, so a
+             family that never opens this screen sees no change. Only the AUTOMATIC open is
+             governed: ⛶ stays, so the child can always enlarge by hand (user decision
+             2026-09-07). Audio files open windowed regardless (the v1.0.73 rule). -->
+        <label class="switch-row">
+          <input id="fullscreen-toggle" type="checkbox" checked />
+          <span>לחיצה על סרטון פותחת אותו במסך מלא<b id="fullscreen-owner" class="setting-owner"></b>
+            <small class="setting-hint">כשזה כבוי הסרטון ייפתח במסך הרגיל — עם רשימת הסרטונים מתחתיו — ותמיד אפשר להגדיל למסך מלא עם ⛶. שירים (קבצי שמע) נפתחים תמיד במסך הרגיל.</small></span>
+        </label>
         <!-- v1.0.63: background playback. OFF by default; the hint states the two things
              that would otherwise surprise a parent — Android cannot tell the power button
              from HOME, and YouTube is excluded by design. -->

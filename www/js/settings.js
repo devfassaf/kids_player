@@ -112,7 +112,11 @@ const SAFE_ON_TIE = {
   // v1.0.45: hide the websites button. Note this is the TIE rule, not the default — an
   // unwritten `sitesEnabled` reads as ON (the parent asked for it on by default), while
   // two devices disagreeing at the same millisecond resolve to the narrower surface.
-  sitesEnabled: false
+  sitesEnabled: false,
+  // v1.0.86: a tap opens the video in FULLSCREEN — today's behaviour, and the default.
+  // TRUE on a tie: there is no safety asymmetry in either direction here, so the tie keeps
+  // the shipped behaviour rather than surprising a family with windowed opens nobody chose.
+  openFullscreen: true
 };
 
 /**

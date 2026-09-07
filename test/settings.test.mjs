@@ -99,6 +99,10 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   // v1.0.32: resume playback — the safe tie is today's behaviour, start from the top
   assert.equal(mergeSettingEntry('resume', e(true, 7), e(false, 7)).v, false, 'start over');
   assert.equal(mergeSettingEntry('resume', e(false, 7), e(true, 7)).v, false);
+  // v1.0.86: open-in-fullscreen — no safety asymmetry either way, so the tie keeps the
+  // shipped behaviour (fullscreen, the default) instead of surprising a family windowed
+  assert.equal(mergeSettingEntry('openFullscreen', e(true, 7), e(false, 7)).v, true, 'keep fullscreen');
+  assert.equal(mergeSettingEntry('openFullscreen', e(false, 7), e(true, 7)).v, true);
   // no safe direction (an opaque PIN hash): deterministic by value, still order-free
   const a = mergeSettingEntry('pin', e('aaa', 7), e('bbb', 7));
   const b = mergeSettingEntry('pin', e('bbb', 7), e('aaa', 7));
