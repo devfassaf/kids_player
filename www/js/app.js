@@ -7111,7 +7111,15 @@ async function ensureSources() {
     src = {
       profileId: activeProfileId, schema: 1, sheetUrl: null, libraryId: 'lib:p:' + activeProfileId,
       shareIntent: { enabled: true, requireApproval: true }, defaultAutoApprove: false,
-      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false }, updatedAt: Date.now()
+      // v1.0.81 — updatedAt 0, NOT Date.now(). This is a PROVISIONAL default scope, minted the
+      // first time a profile renders with no sources record. If the Drive pull is delayed (the
+      // device is signed OUT of Google at launch), this mint must NEVER win the profileSources
+      // LWW merge in mergeDbFiles and overwrite the REAL lib:<hash> mapping in the backup —
+      // which corrupted a family's Drive doc so every device (even a fresh reinstall) showed
+      // empty profiles over a full database (field-reported). A real mapping (any positive
+      // updatedAt, from a restore or a genuine change) always outranks 0; a genuinely-new
+      // profile has no competing mapping, so 0 is harmless there.
+      maxItemsPerChannel: 500, maxItemsTotal: 5000, drive: { enabled: false }, updatedAt: 0
     };
     await db.putSources(src);
   }

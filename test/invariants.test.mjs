@@ -2095,6 +2095,21 @@ test('the library SCOPE travels with each profile in the Drive doc (v1.0.38)', (
     'buildLocalDoc no longer writes a NULL sheetUrl for a migrated profile — an older app would read the sentinel as a real sheet');
 });
 
+test('ensureSources mints a PROVISIONAL scope that cannot corrupt the backup map (v1.0.81)', () => {
+  // ensureSources mints `lib:p:<pid>` the first time a profile renders with no sources record.
+  // It MUST carry updatedAt 0, never Date.now(): otherwise, when the device is signed OUT of
+  // Google at launch and the pull is delayed, this provisional mint wins the profileSources LWW
+  // merge in mergeDbFiles and OVERWRITES the real lib:<hash> mapping in the Drive doc — which
+  // corrupted a family's backup so every device (even a fresh reinstall) showed empty profiles
+  // over a full database (field-reported). Comment-stripped, or this guard trips on its own
+  // explanation. The merge-layer half is pinned by a gdrive.test.mjs unit test.
+  const src = fnSlice(CODE.get('www/js/app.js'), 'async function ensureSources(');
+  assert.ok(src, 'ensureSources is gone — re-anchor this guard');
+  assert.match(src, /libraryId: 'lib:p:' \+ activeProfileId/, 'ensureSources no longer mints the lib:p: default');
+  assert.match(src, /updatedAt: 0\b/, 'the provisional mint no longer uses updatedAt 0 — it can win LWW and corrupt the backup map (v1.0.81)');
+  assert.doesNotMatch(src, /updatedAt: Date\.now\(\)/, 'the provisional mint uses Date.now() again — it will overwrite the real mapping on a signed-out launch');
+});
+
 test('the orphan sweep is an UNCONDITIONAL STAGE of every sync (v1.0.38)', () => {
   // THE BUG: planOrphanGC only ever ran inside applySheetMirror, gated on `if (sheetParsed)`
   // — so a profile with NO sheet never swept, which is the normal case since v1.0.32 and the
