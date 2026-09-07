@@ -273,6 +273,51 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.84 — **BLUETOOTH / HEADSET / WATCH / CAR CONTROL DURING ALL PLAYBACK** (user request:
+  a smartwatch, headphones or a car kit should play/pause, stop and change track). The
+  framework `MediaSession` (v1.0.65) already routed those, but ONLY while background playback
+  (`bgPlay`) was on, only for files, and "next" meant ±10s.
+  - **THE SESSION IS NOW ARMED WHENEVER A VIDEO PLAYS, ANY ENGINE** (pure
+    `playerlogic.mediaSessionActive` = item && playing). This is the whole feature: an external
+    controller works during ordinary viewing, not only under the opt-in setting. The session is
+    the CONTROL SURFACE; `backgroundPlayDecision` is a SEPARATE question (does it keep playing
+    when the screen goes off — files only). **YouTube is included** (a session while the screen
+    is on) but still pauses on background, because `onAppPause` keeps reading
+    `bgPlayEnabled && bgPlayLive` — broadening the session never keeps a throttled WebView
+    "playing". `bgPlayLive` now means "the media session/service is live", not "background mode".
+  - **A HEADSET/WATCH/CAR's ⏮/⏭ KEYS CHANGE THE TRACK** (`onSkipToNext/Previous` → `next`/`prev`
+    → the same gift-skipping, no-wrap `pipSkip` the PiP window uses). The lock-screen/car DRAWN
+    buttons stay the ±10s custom actions (v1.0.68 — long recordings); only the PHYSICAL media
+    keys skip, and hardware buttons reach `onSkipToNext/Previous` whether or not advertised.
+  - **THE TRANSPORT GATES READ THE LIVE SESSION** (`bgPlayLive`), never the `bgPlay` SETTING —
+    or the controls would die outside background mode. `prev`/`next` route to `pipSkip` BEFORE
+    the gate (works for PiP AND a BT skip). **No new permission**: media buttons route to the
+    active session automatically.
+  - ⚠️ **CONSEQUENCE (rides the release notes): the media notification now appears during ALL
+    playback**, for every family, not just background mode (the user accepted this — it is also
+    the lock-screen control). It has no content intent, so it is not a way out of a kiosk/lock.
+  - 1 unit test (`mediaSessionActive`) + invariants (native ⏮/⏭ → next/prev in both java copies;
+    `armBackgroundPlayback` arms via `mediaSessionActive` not `backgroundPlayDecision`; the
+    transport gates read `bgPlayLive`; `onAppPause` still gates keep-playing on the setting),
+    every guard proven red on a planted regression (3). Both java copies byte-identical; APK
+    compiles. **The real BT/lock-screen/car behaviour is a DEVICE checklist item.**
+- v1.0.83 — **MEDIA PLAYS ON ANY APPROVED SITE** (field report: anafeam-kids.co.il played in
+  parent mode but not child mode). Confirmed live: the player is a `<video>` streaming HLS
+  (`.m3u8` + segments) from a CDN on another host (`*.b-cdn.net`) — a third-party SUBRESOURCE.
+  Parent mode navigates unrestricted so it played; child mode's strict subresource filter
+  blocked the CDN, and because it is a subresource (not a navigation) it failed SILENTLY (no
+  blocked page, so v1.0.78's per-site toggle was undiscoverable).
+  - **THE SAFETY BOUNDARY GAINED ONE TARGETED RELAXATION** (user decision): a `<video>`/`<audio>`
+    on an APPROVED page may stream from any https host. Pure `weblock.isMediaUrl` (extension at
+    the END OF THE PATH, before `?token`/`#frag`, so `…/playlist.m3u8?bcdn_token=…` matches but a
+    tracker whose QUERY merely names `video.mp4` does not), mirrored in native
+    `KidsWebPlugin.subresourceAllowed` (both java copies). **Scripts, trackers, analytics pixels
+    and embeds carry no media extension and stay blocked; navigation is untouched**, so the child
+    can still only ever BE on an approved page. The v1.0.78 `allowExternal` per-rule opt-out
+    remains for the rest.
+  - Invariants pin that BOTH the JS spec and the NATIVE filter allow media (the native
+    enforcement is device-only — the v1.0.78 browser-sim trap). Device-only for the real
+    playback.
 - v1.0.79 — ⚠️ **DISCONNECTING ONE SITE WIPED EVERY PROFILE'S LIBRARY — THE WORST
   DATA-LOSS BUG THE APP HAS SHIPPED** (field report: "באג שמחק לי את כל הרשימות של הסרטונים
   מכל הפרופילים ואני לא רואה שום סרטון בשום פרופיל"). The parent pressed a site's **"ניתוק"**
