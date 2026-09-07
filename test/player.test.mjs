@@ -669,3 +669,24 @@ test('miniEligible: BACK floats only with the setting on, no lock, no kiosk, and
   assert.equal(miniEligible({}), false);
   assert.equal(miniEligible(), false);
 });
+
+/* ---------------- transport verbs (v1.0.88) ---------------- */
+import { transportIntent } from '../www/js/playerlogic.js';
+
+test('transportIntent: the headset answer button toggles; a DIRECTIONAL verb never inverts (v1.0.88)', () => {
+  // the user's request: one press pauses OR resumes, according to the live state
+  assert.equal(transportIntent('toggle', true), 'pause');
+  assert.equal(transportIntent('toggle', false), 'resume');
+  // directional verbs act only when they CHANGE the state — before this rule the session
+  // mapped every command to "toggle", so PAUSE while paused RESUMED, and STOP while paused
+  // (onStop → 'pause') STARTED the video: the exact opposite of the command.
+  assert.equal(transportIntent('pause', true), 'pause');
+  assert.equal(transportIntent('pause', false), null, 'an explicit PAUSE must never resume');
+  assert.equal(transportIntent('play', false), 'resume');
+  assert.equal(transportIntent('play', true), null, 'an explicit PLAY must never pause');
+  // an unknown verb, or junk state, does nothing — never guesses a direction
+  assert.equal(transportIntent('stop', true), null);
+  assert.equal(transportIntent('', false), null);
+  assert.equal(transportIntent(null, true), null);
+  assert.equal(transportIntent('toggle', undefined), 'resume', 'unknown playing state reads as "not playing" — a wrong resume beats a wrong pause');
+});

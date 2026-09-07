@@ -273,6 +273,47 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.88 — **A HEADSET'S ANSWER BUTTON PAUSES AND RESUMES THE VIDEO** (user request:
+  "לחיצה על כפתור ענה בדיבורית תתחיל ניגון או תעצור בהתאמה"). The v1.0.84 session already
+  routed a watch's ⏯; the single-button hands-free path rode the FRAMEWORK's default
+  `onMediaButtonEvent`, and that default is what this release replaces.
+  - **THE DISPATCH IS OURS NOW** (`onMediaButtonEvent` override in PlaybackService, both
+    java copies), for three reasons: the default DELAYS every single press by the
+    double-tap window (waiting to see whether a second press makes it a "next" — a pause
+    button that answers half a second late reads as broken); it picks the toggle DIRECTION
+    from the session's LAST PUBLISHED PlaybackState, which rides an async JS→bridge
+    republish, so a press landing inside that window is dispatched off a stale state; and
+    owning it removes the dependence on per-OEM default-dispatch behaviour.
+    `KEYCODE_HEADSETHOOK`/`KEYCODE_MEDIA_PLAY_PAUSE` emit `"toggle"` immediately;
+    `KEYCODE_MEDIA_PLAY`/`KEYCODE_MEDIA_PAUSE` carry their DIRECTION. Emitted on the DOWN
+    with repeatCount 0 only (a held button auto-repeats — the dpad.js lesson), and the
+    WHOLE key stream of handled codes is consumed so the framework default cannot
+    double-handle the same press; every other key (NEXT/PREVIOUS/REWIND/FAST_FORWARD)
+    falls through to `super`, keeping the v1.0.84 track-skip and ±10 callbacks.
+  - **THE COST, deliberate**: a single-button headset's double-press no longer skips a
+    track (it is pause+resume now). Instant, deterministic toggling is the user's explicit
+    ask; headsets with dedicated ⏮/⏭ keys keep the track skip.
+  - ⚠️ **A DIRECTIONAL VERB MUST NEVER INVERT, and until now every one could.** The
+    session's transport callbacks all mapped to `"toggle"`, so a controller sending an
+    explicit PAUSE to an already-paused session RESUMED it — and `onStop` while paused
+    STARTED the video: sound beginning on the command that means "stop sound". The
+    callbacks are directional now (`onPlay`→`"play"`, `onPause`/`onStop`→`"pause"`; this
+    player has no teardown-by-controller, and stop must never start), and pure
+    **`playerlogic.transportIntent(action, playing)`** → `'pause' | 'resume' | null` is
+    the ONE rule every verb routes through in `handlePlaybackCommand` — decided against
+    the LIVE `playbackState()`, never the published one; a satisfied directional verb (or
+    an unknown one) answers null and does NOTHING. The v1.0.74 report-what-happened
+    contract is untouched: the handler still only asks the player and lets the engine's
+    own event republish, and the v1.0.84 gates (`bgPlayLive || pipEnabled`, live-session
+    not setting) admit the new verbs through the same branch.
+  - 1 unit test (`transportIntent`, the full matrix incl. junk) + 1 invariants guard (14
+    assertions: the four key codes, toggle-vs-directional mapping, the repeat guard, the
+    consume + `super` fallthrough, `onStop` never `"toggle"`, JS routing through the pure
+    rule) + the v1.0.74 toggle-line pin reshaped deliberately; every guard proven red on a
+    planted regression (7). Both java copies byte-identical (the parity set). **A real
+    headset/hands-free button is a DEVICE checklist item** (the v1.0.85 rule — no test can
+    press it); the java compile gate is the release build itself, which `release.sh` runs
+    before publishing.
 - v1.0.87 — **THE SEARCH SCREEN REMEMBERS THE LAST 10 SEARCHES** (user request: "אם אני
   רוצה לחפש משהו פעמיים הוא כבר מופיע לי"; the 11th search evicts the OLDEST, so the ten
   most recent always remain). Tappable 🕒 chips under the search bar, shown only while the

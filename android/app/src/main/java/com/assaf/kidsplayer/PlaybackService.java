@@ -39,6 +39,7 @@ import android.media.session.PlaybackState;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Base64;
+import android.view.KeyEvent;
 
 public class PlaybackService extends Service {
 
@@ -90,9 +91,60 @@ public class PlaybackService extends Service {
         try {
             session = new MediaSession(this, "KidsPlayer");
             session.setCallback(new MediaSession.Callback() {
-                @Override public void onPlay() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
-                @Override public void onPause() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
-                @Override public void onStop() { KidsNativePlugin.emitPlaybackCommand("toggle"); }
+                // v1.0.88 — A HEADSET'S ANSWER BUTTON PAUSES/RESUMES, INSTANTLY (user request:
+                // "לחיצה על כפתור ענה בדיבורית תתחיל ניגון או תעצור בהתאמה").
+                //
+                // The dispatch is OURS now, not the framework default's, for three reasons:
+                //  1. The default DELAYS every single press by the double-tap window (it waits
+                //     to see whether a second press makes it a "next") — a pause button that
+                //     answers half a second late reads as broken.
+                //  2. The default picks the toggle DIRECTION from the session's LAST PUBLISHED
+                //     PlaybackState, which rides an async JS→bridge republish; a press landing
+                //     inside that window is dispatched off a stale state. JS decides from the
+                //     LIVE player instead (playerlogic.transportIntent).
+                //  3. Owning it removes the dependence on per-OEM default-dispatch behaviour.
+                //
+                // THE COST, deliberate: a single-button headset's double-press no longer skips
+                // a track (it is now pause+resume) — instant, deterministic toggling is the
+                // user's explicit ask, and headsets with dedicated ⏮/⏭ keys keep the track skip.
+                //
+                // The stateless keys (HEADSETHOOK, PLAY_PAUSE) emit "toggle"; the DIRECTIONAL
+                // keys emit "play"/"pause", which JS honours only when they CHANGE the state —
+                // an explicit PAUSE to an already-paused video must never resume it. Emitted on
+                // the DOWN with repeatCount 0 only (a held button auto-repeats — the dpad.js
+                // lesson), and the WHOLE key stream of these codes is consumed so the framework
+                // default cannot double-handle the same press. Every other key (NEXT/PREVIOUS/
+                // REWIND/FAST_FORWARD) falls through to super, which routes it to the
+                // callbacks below exactly as before.
+                @Override public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
+                    try {
+                        KeyEvent ke = mediaButtonIntent == null
+                            ? null : (KeyEvent) mediaButtonIntent.getParcelableExtra(Intent.EXTRA_KEY_EVENT);
+                        if (ke != null) {
+                            int code = ke.getKeyCode();
+                            boolean isToggleKey = code == KeyEvent.KEYCODE_HEADSETHOOK
+                                || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
+                            boolean isDirectionalKey = code == KeyEvent.KEYCODE_MEDIA_PLAY
+                                || code == KeyEvent.KEYCODE_MEDIA_PAUSE;
+                            if (isToggleKey || isDirectionalKey) {
+                                if (ke.getAction() == KeyEvent.ACTION_DOWN && ke.getRepeatCount() == 0) {
+                                    KidsNativePlugin.emitPlaybackCommand(isToggleKey ? "toggle"
+                                        : code == KeyEvent.KEYCODE_MEDIA_PLAY ? "play" : "pause");
+                                }
+                                return true; // consume UP/repeats too — no double-handling
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    return super.onMediaButtonEvent(mediaButtonIntent);
+                }
+                // v1.0.88 — the transport callbacks (an external controller's EXPLICIT commands,
+                // e.g. a watch UI, a car's resume-after-navigation) are DIRECTIONAL now. They
+                // all used to emit "toggle", so PAUSE while paused RESUMED and — worst — STOP
+                // while paused STARTED the video. onStop maps to "pause": this player has no
+                // teardown-by-controller, and stopping must never start sound.
+                @Override public void onPlay() { KidsNativePlugin.emitPlaybackCommand("play"); }
+                @Override public void onPause() { KidsNativePlugin.emitPlaybackCommand("pause"); }
+                @Override public void onStop() { KidsNativePlugin.emitPlaybackCommand("pause"); }
                 @Override public void onRewind() { KidsNativePlugin.emitPlaybackCommand("back"); }
                 @Override public void onFastForward() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
                 // the lock screen's and the car's ⏪10/⏩10 — the custom actions published above

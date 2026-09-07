@@ -482,6 +482,31 @@ export function tvKeyIntent(action, { time = 0, duration = 0, repeat = false } =
   return { kind: 'ignore' }; // dpad relies on a falsy result to NOT preventDefault
 }
 
+/**
+ * v1.0.88 — a transport command's intent against the LIVE playing state (user request: the
+ * headset's answer button pauses/resumes the video). ONE rule for every external control
+ * surface — the notification's ⏯, a headset/hands-free button, a watch, a car:
+ *
+ *   'toggle' — a single stateless button (HEADSETHOOK, PLAY_PAUSE, the notification ⏯):
+ *              playing → pause, paused → resume.
+ *   'play' / 'pause' — DIRECTIONAL verbs (a controller's explicit MEDIA_PLAY/MEDIA_PAUSE,
+ *              the session's onPlay/onPause/onStop): honoured only when they CHANGE the
+ *              state. ⚠️ A directional verb must NEVER invert — before this rule the native
+ *              session mapped every one of them to "toggle", so a controller sending PAUSE
+ *              to an already-paused session RESUMED it, and STOP while paused STARTED the
+ *              video: "stop" playing sound is the exact opposite of the command.
+ *
+ * Anything else — an unknown verb from a newer/older peer surface — answers null: an
+ * unrecognized command must do nothing, never guess a direction.
+ */
+export function transportIntent(action, playing) {
+  const on = playing === true;
+  if (action === 'toggle') return on ? 'pause' : 'resume';
+  if (action === 'pause') return on ? 'pause' : null;
+  if (action === 'play') return on ? null : 'resume';
+  return null;
+}
+
 /* ---------------- interrupted by a call (v1.0.57) ---------------- */
 
 /** The audio modes that mean a call is happening, ringing included. */
