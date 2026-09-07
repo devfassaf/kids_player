@@ -273,6 +273,18 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.85 — **A SMARTWATCH'S NEXT/PREVIOUS NOW ACTUALLY SKIPS** (field report on v1.0.84: pause
+  worked from the watch, but its ⏮/⏭ did nothing). ⚠️ **A MediaController (a smartwatch, a car
+  head unit) SENDS only the transport actions the session ADVERTISES.** v1.0.70 removed
+  `ACTION_SKIP_TO_NEXT/PREVIOUS` from the advertised `PlaybackState` believing "hardware buttons
+  arrive regardless of advertising" — TRUE for a wired headset's KEY event, FALSE for a watch
+  controller. Pause worked because `ACTION_PLAY_PAUSE` is advertised; skip was silent because it
+  was not. The fix re-advertises `ACTION_SKIP_TO_NEXT | ACTION_SKIP_TO_PREVIOUS` (the callbacks
+  → `next`/`prev` → track skip already shipped in v1.0.84). **v1.0.70's icon concern was only
+  ever about the ±10 SEEK** (a standard REWIND/FF action wears a standard triangle), which is why
+  the ±10 stays a CUSTOM action; the skip triangles the system now draws correctly CHANGE TRACK.
+  Invariants guard REVERSED (skip must be advertised again). Both java copies; APK compiles.
+  **DEVICE-only — a physical watch/car button cannot be proven by any test.**
 - v1.0.84 — **BLUETOOTH / HEADSET / WATCH / CAR CONTROL DURING ALL PLAYBACK** (user request:
   a smartwatch, headphones or a car kit should play/pause, stop and change track). The
   framework `MediaSession` (v1.0.65) already routed those, but ONLY while background playback

@@ -4345,14 +4345,17 @@ test('the playback service publishes a real MediaSession (v1.0.65)', () => {
   // The ACTIONS a car and the lock screen render come from the PlaybackState, NOT from the
   // notification's own action list — two surfaces that must both be fed.
   //
-  // ⚠️ v1.0.70 REMOVED SKIP_TO_NEXT/PREVIOUS FROM THE ADVERTISED SET, DELIBERATELY, and that
-  // removal IS a fix: a STANDARD action can only ever wear a STANDARD icon, so advertising
-  // them made the lock screen draw the system's ⏮/⏭ triangles no matter what the
-  // notification's own ring-with-10 icons said. Reported from a device. CUSTOM actions are
-  // the one mechanism that carries our drawable onto those surfaces.
+  // ⚠️ v1.0.85 REVERSED v1.0.70: SKIP_TO_NEXT/PREVIOUS ARE ADVERTISED AGAIN. v1.0.70 removed
+  // them believing "hardware buttons arrive regardless of advertising" — true for a wired
+  // headset KEY, but a smartWATCH/car is a MediaController and SENDS only the actions the
+  // session advertises. Reported from a device on v1.0.84: pause worked (advertised), the
+  // watch's next/previous did NOTHING (not advertised). The ±10 SEEK stays a CUSTOM action —
+  // that is what v1.0.70's icon fix was actually about — while the skip triangles the system
+  // draws for these now correctly CHANGE TRACK, which is the whole point of the BT feature.
   assert.ok(src.includes('ACTION_PLAY_PAUSE'), 'the session does not advertise play/pause');
-  assert.doesNotMatch(src, /setActions\([\s\S]{0,400}?ACTION_SKIP_TO/,
-    'a standard skip action is advertised again — the lock screen will draw ITS triangles over our icons');
+  assert.match(src, /setActions\([\s\S]{0,400}?ACTION_SKIP_TO_NEXT/,
+    'skip is not advertised — a smartwatch/car controller will not send next/previous (v1.0.85 field fix)');
+  assert.match(src, /ACTION_SKIP_TO_PREVIOUS/, 'previous is not advertised — the watch\'s back button stays dead');
   for (const cust of ['addCustomAction', 'ic_seek_back_10', 'ic_seek_fwd_10']) {
     assert.ok(src.includes(cust),
       `the seek buttons are not published as custom actions — the lock screen and the car cannot show our icon`);
