@@ -2432,16 +2432,69 @@ test('a tap on a video reaches fullscreen SYNCHRONOUSLY (v1.0.2 rule, pinned v1.
   assert.ok(!/\bawait\b/.test(prelude),
     'openWatch awaits something BEFORE going fullscreen — the tap\'s user activation is spent');
 
-  // 3) v1.0.73 — an AUDIO file opts OUT of fullscreen (user request), and the decision is
-  //    the pure one. The call must stay unconditional-looking in the sense that matters —
-  //    synchronous, unawaited — while the CHOICE lives in playerlogic.
-  assert.match(app, /if \(opensFullscreen\(item\)\) enterPlayerFullscreen\(\);/,
-    'the fullscreen request is no longer gated by the pure decision — audio would fill the screen again');
+  // 3) v1.0.73/v1.0.86 — an AUDIO file opts OUT of fullscreen (user request), and since
+  //    v1.0.86 the parent's per-profile setting can opt VIDEOS out too. The call must stay
+  //    synchronous and unawaited while the CHOICE lives in playerlogic — and the flag it
+  //    passes must be the CACHED module variable: an awaited settings read here would void
+  //    the very user activation the request needs.
+  assert.match(app, /if \(opensFullscreen\(item, openFullscreenEnabled\)\) enterPlayerFullscreen\(\);/,
+    'the fullscreen request no longer passes the pure decision the cached per-profile flag');
   const logic = MODULES.get('www/js/playerlogic.js');
-  assert.match(logic, /export function opensFullscreen\(item\)/, 'opensFullscreen is gone');
+  assert.match(logic, /export function opensFullscreen\(item, enabled = true\)/,
+    'opensFullscreen is gone, or lost its default-true flag — every legacy caller would go windowed');
   // ⚠️ pinned by ABSENCE: reading an UNKNOWN media as audio would open real videos windowed
   assert.match(logic, /item\.type === 'file' && item\.media === 'audio'/,
     'the opt-out is not restricted to a KNOWN audio file — an unenriched video would open windowed');
+  // ⚠️ v1.0.86: only an EXPLICIT false opts out (comment-stripped — the function's own
+  //    comment discusses the rule). A truthiness read would open real videos windowed for
+  //    junk/unwritten values from an older peer's document or a failed settings read.
+  assert.match(CODE.get('www/js/playerlogic.js'), /if \(enabled === false\) return false;/,
+    'the setting gate is no longer strict-false — junk would open videos windowed');
+});
+
+test('the open-in-fullscreen setting is wired end to end (v1.0.86)', () => {
+  // Per-profile, SYNCED, ON unless written — and read from a SYNC CACHE because openWatch
+  // consults it inside the tap gesture (the guard above pins that call). Comment-stripped
+  // source throughout: the surrounding comments name the cached flag, and a guard satisfied
+  // by its own comment is the trap this file has already walked into four times.
+  const app = CODE.get('www/js/app.js');
+
+  // 1) the cache refresh rides loadGiftStates (the resumeEnabled shape), fallback TRUE and
+  //    strict `!== false` — an unwritten setting is today's fullscreen…
+  const load = fnSlice(app, 'async function loadGiftStates()');
+  assert.match(load, /openFullscreenEnabled = \(await getSetting\(activeProfileId, 'openFullscreen', true\)\) !== false/,
+    'loadGiftStates no longer refreshes the cached flag, or reads it with the wrong default');
+  // …and a FAILED read keeps it too — the OPPOSITE catch direction from resume/bgPlay,
+  //    because an unreadable settings store must never strand the child windowed
+  assert.match(load, /catch \{ openFullscreenEnabled = true; \}/,
+    'a failed settings read no longer falls back to fullscreen (today\'s behaviour)');
+
+  // 2) the toggle writes the SETTING, the CACHE and the PUSH — drop any one and the feature
+  //    half-works: no cache = takes effect only at the next home render; no push = never
+  //    reaches the family's other devices (the user's explicit requirement).
+  const handler = handlerBody(app, "$('fullscreen-toggle').addEventListener('change'");
+  assert.ok(handler, 'the fullscreen toggle handler is gone');
+  assert.match(handler, /putSetting\(activeProfileId, 'openFullscreen', e\.target\.checked\)/,
+    'the toggle no longer writes the synced setting');
+  assert.match(handler, /openFullscreenEnabled = e\.target\.checked/,
+    'the toggle no longer updates the cache openWatch reads — off would wait for a re-render');
+  assert.match(handler, /maybeSchedulePush\(\)/, 'the change never reaches the other devices');
+
+  // 3) the settings screen loads it with the same strict `!== false` default
+  assert.match(app, /\$\('fullscreen-toggle'\)\.checked = \(await getSetting\(activeProfileId, 'openFullscreen', true\)\) !== false/,
+    'refreshParent no longer loads the toggle, or loads it with the wrong default');
+
+  // 4) an exact-tie merge keeps today's fullscreen — the SAFE_ON_TIE entry
+  assert.match(CODE.get('www/js/settings.js'), /openFullscreen: true/,
+    'the tie rule is gone — two devices writing at the same millisecond would ping-pong');
+
+  // 5) the child's name labels the row like every per-profile setting, and the markup
+  //    default is CHECKED — an unwritten setting must render as the fullscreen it means
+  assert.match(app, /'fullscreen-owner'/,
+    'the owner label is not filled — the row reads as a device switch instead of a per-child one');
+  const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.match(html, /id="fullscreen-toggle" type="checkbox" checked/,
+    'the markup default is no longer CHECKED — the screen would lie about an unwritten setting');
 });
 
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {

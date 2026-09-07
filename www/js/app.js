@@ -93,6 +93,10 @@ let bgPlayLive = false;               // v1.0.84: the media session/service is l
                                       // whether it keeps playing once the screen goes off.
 let pipEnabled = false;               // v1.0.76: the active profile's synced 'pip' setting
 let pipAvailable = false;             // …and whether this device can PiP at all (API 26+, not TV)
+let openFullscreenEnabled = true;     // v1.0.86: the active profile's synced 'openFullscreen'
+                                      // setting — TRUE (today's behaviour) unless a parent
+                                      // explicitly switched it off. openWatch reads it INSIDE
+                                      // the tap gesture, so it must be a sync cache.
 // v1.0.76 — set by the native pipChanged event, which Android fires BEFORE the onPause that
 // entering PiP causes; the screen-off pause handler reads it to tell "shrunk to a floating
 // window" (keep playing) from "actually backgrounded" (bank the spot and fall silent).
@@ -1014,7 +1018,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'bgplay-owner', 'pip-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'fullscreen-owner', 'bgplay-owner', 'pip-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1848,6 +1852,12 @@ async function loadGiftStates() {
   // (onUserLeaveHint is synchronous), so the flag must live in memory per profile.
   try { pipEnabled = (await getSetting(activeProfileId, 'pip', false)) === true; }
   catch { pipEnabled = false; }
+  // v1.0.86 — same shape, OPPOSITE failure direction: openWatch consults this INSIDE the tap
+  // gesture (the v1.0.2 no-await rule), and only an EXPLICIT parental "off" may open a video
+  // windowed — an unreadable settings store must keep today's fullscreen, never quietly
+  // strand the child in the windowed player nobody chose.
+  try { openFullscreenEnabled = (await getSetting(activeProfileId, 'openFullscreen', true)) !== false; }
+  catch { openFullscreenEnabled = true; }
   // v1.0.57: and 🕒's size. buildFolders, the pager and the watch stamp all need it
   // synchronously, and it must be re-read HERE rather than cached once per launch — a peer
   // can change it (the number is synced) and a profile switch changes whose number it is.
@@ -4096,12 +4106,17 @@ async function openWatch(item) {
   // with but the music scene, and doing so hides the seek bar and the way back. The call
   // stays SYNCHRONOUS and unawaited either way — the tap's user activation is spent by the
   // first await, and a conditional costs nothing.
+  // v1.0.86 — the parent can switch the automatic fullscreen OFF per profile (synced
+  // 'openFullscreen', ON unless written). The flag is the CACHED openFullscreenEnabled —
+  // an awaited settings read here would void the very user activation the request needs.
+  // Only the AUTOMATIC open changes: ⛶ stays, so the child can still enlarge by hand
+  // (user decision 2026-09-07).
   // v1.0.77 — make the player visible (docked) SYNCHRONOUSLY before the fullscreen request:
   // it now starts pw-hidden (top-level layer), and requestFullscreen on a display:none
   // element is refused. dockPlayer() below re-syncs its box once the watch view is laid out.
   setPlayerMode('docked');
   miniActive = false;
-  if (opensFullscreen(item)) enterPlayerFullscreen();
+  if (opensFullscreen(item, openFullscreenEnabled)) enterPlayerFullscreen();
   // watch-grid context: the record's own folder (or where the child was browsing)
   // v1.0.12: when the child came from a FOLDER view, browse THAT folder — virtual
   // 🎞️ group folders aren't stored on the record, so item.folderId can't express
@@ -4924,6 +4939,9 @@ async function refreshParent() {
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
   $('resume-toggle').checked = (await getSetting(activeProfileId, 'resume', false)) === true;
+  // v1.0.86: ON unless explicitly written off — the shareApproval direction, because the
+  // default is today's behaviour and only a parent's explicit answer may change it.
+  $('fullscreen-toggle').checked = (await getSetting(activeProfileId, 'openFullscreen', true)) !== false;
   $('bgplay-toggle').checked = (await getSetting(activeProfileId, 'bgPlay', false)) === true;
   // v1.0.76 — PiP: the row exists only where the device can honour it (API 26+, not TV);
   // showing a dead toggle would be a promise the tablet cannot keep.
@@ -9078,6 +9096,19 @@ function wire() {
     msg.textContent = e.target.checked
       ? 'המשך צפייה הופעל ✅ — סרטון שנעצר ייפתח מאותה נקודה'
       : 'המשך צפייה כובה — כל סרטון מתחיל מההתחלה';
+    msg.className = 'form-msg ok';
+  });
+  // v1.0.86: open-in-fullscreen — per-profile and SYNCED. The cache is what openWatch reads
+  // inside the tap gesture (the v1.0.2 no-await rule), so it must be updated HERE too, or
+  // the toggle takes effect only at the next home render.
+  $('fullscreen-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'openFullscreen', e.target.checked);
+    openFullscreenEnabled = e.target.checked;
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'פתיחה במסך מלא הופעלה ✅ — לחיצה על סרטון תפתח אותו על כל המסך'
+      : 'פתיחה במסך מלא כובתה — סרטון ייפתח במסך הרגיל, ותמיד אפשר להגדיל עם ⛶';
     msg.className = 'form-msg ok';
   });
   // v1.0.63 — background playback. Turning it OFF must take effect NOW, not at the next

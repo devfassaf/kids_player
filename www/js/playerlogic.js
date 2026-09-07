@@ -218,9 +218,17 @@ export function shouldFinishNearEnd({
  * which is the safe direction for a guess. A video that turns out to be audio simply keeps
  * the fullscreen it was given — the alternative, dropping out of fullscreen a second later,
  * is a jump the child did not ask for.
+ *
+ * v1.0.86 — the parent can switch the automatic fullscreen OFF per profile (`enabled`, the
+ * synced 'openFullscreen' setting; user request 2026-09-07). Only an EXPLICIT false opts
+ * out — the same fail-toward-status-quo direction as the audio rule: the flag arrives from
+ * a settings store that can be unwritten, junk, or a peer's older document, and every one
+ * of those must keep today's fullscreen rather than quietly change how videos open. The
+ * setting governs only the AUTOMATIC open; ⛶ stays available either way (user decision).
  */
-export function opensFullscreen(item) {
+export function opensFullscreen(item, enabled = true) {
   if (!item) return false;
+  if (enabled === false) return false;
   return !(item.type === 'file' && item.media === 'audio');
 }
 

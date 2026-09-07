@@ -566,6 +566,27 @@ test('opensFullscreen: only a KNOWN audio file opts out (v1.0.73)', async () => 
   assert.equal(opensFullscreen(), false);
 });
 
+test('opensFullscreen: the per-profile setting can open VIDEOS windowed too (v1.0.86)', async () => {
+  const { opensFullscreen } = await import('../www/js/playerlogic.js');
+  // the parent's explicit "off" opens everything in the ordinary player…
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, false), false);
+  assert.equal(opensFullscreen({ type: 'file', media: 'video' }, false), false);
+  assert.equal(opensFullscreen({ type: 'file', media: null }, false), false);
+  // …an explicit "on" keeps exactly the v1.0.73 matrix (audio still opts out)
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, true), true);
+  assert.equal(opensFullscreen({ type: 'file', media: 'audio' }, true), false);
+  // ⚠️ ONLY AN EXPLICIT false OPTS OUT — the flag rides a settings store that can be
+  // unwritten or junk (a peer's older doc, a failed read), and every such value must keep
+  // today's fullscreen. Reading truthiness instead would open real videos windowed for a
+  // family that never touched the setting.
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, undefined), true);
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, null), true);
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, 0), true);
+  assert.equal(opensFullscreen({ type: 'youtube', id: 'abc' }, 'off'), true);
+  // no item stays no fullscreen, whatever the flag says
+  assert.equal(opensFullscreen(null, true), false);
+});
+
 /* ---------------- picture-in-picture (v1.0.76) ---------------- */
 
 test('pipEligibility: opt-in, both engines, playing only — and EVERY lock refuses it', async () => {
