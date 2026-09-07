@@ -4932,3 +4932,63 @@ test('the in-app mini-player is a top-level layer, lock-gated, and torn down on 
   assert.match(fnSlice(app, 'async function tickIdleSleep('), /\|\| miniActive/,
     'the idle timer parks the floating mini video nobody can answer');
 });
+
+test('recent searches: recorded at USE moments only, painted over an empty input, device-local (v1.0.87)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // 1. BOTH open paths paint the row — a feature the open never paints is a dead feature
+  //    (the v1.0.70 site-lock lesson: correct code on a surface nothing reaches).
+  assert.match(fnSlice(app, 'async function openSearch('), /refreshRecentSearches\(/,
+    'openSearch no longer paints the recent-searches row');
+  assert.match(fnSlice(app, 'async function openFolderSearch('), /refreshRecentSearches\(/,
+    'openFolderSearch no longer paints the recent-searches row');
+
+  // 2. Recording rides USE, never keystrokes. The input handler fires per keystroke, so
+  //    recording there fills all ten slots with prefixes of ONE search ("ד","דינ","דינו"…).
+  const inputBody = handlerBody(app, "$('search-input').addEventListener('input', () => {");
+  assert.ok(inputBody, 'lost the search-input input listener — re-anchor this guard');
+  assert.doesNotMatch(inputBody, /recordRecentSearch/,
+    'the input handler records history — ten slots of prefixes of one search');
+  assert.match(inputBody, /refreshRecentSearches\(/,
+    'typing no longer hides/restores the chips row');
+
+  // 3. The three recording sites. A tapped RESULT must record in the CAPTURE phase — the
+  //    tile handler navigates away, and the query must be read before anything moves.
+  const clicks = handlerBody(app, "$('search-results').addEventListener('click', (e) => {");
+  assert.ok(clicks, 'lost the results-grid click recorder — re-anchor this guard');
+  assert.match(clicks, /recordRecentSearch\(/, 'a tapped result no longer records the query');
+  assert.match(app, /\$\('search-results'\)\.addEventListener\('click', \(e\) => \{[\s\S]*?\}, true\);/,
+    'the result recorder lost its capture flag — the tile handler navigates before the query is read');
+  const keys = handlerBody(app, "$('search-input').addEventListener('keydown', (e) => {");
+  assert.ok(keys, 'lost the search Enter listener — re-anchor this guard');
+  assert.match(keys, /recordRecentSearch\(/, 'Enter no longer records the query');
+
+  // 4. The paint's own contract: hidden synchronously BEFORE the async read (a stale row —
+  //    possibly ANOTHER PROFILE's history — must never flash), the profile re-checked after
+  //    the await (the logoTarget rule), and chips as REAL <button>s (the TV focus ring
+  //    covers `button`; a div is invisible to the remote).
+  const paint = fnSlice(app, 'async function refreshRecentSearches(');
+  const hideAt = paint.indexOf("classList.add('hidden')");
+  const readAt = paint.indexOf('await prefGet');
+  assert.ok(hideAt > 0 && readAt > 0 && hideAt < readAt,
+    'refreshRecentSearches no longer hides the row before its async read — a stale row can flash');
+  assert.match(paint, /pid !== activeProfileId/,
+    'a late read can paint one profile\'s history into another\'s screen');
+  assert.match(paint, /createElement\('button'\)/, 'chips are no longer real buttons — the TV remote cannot reach them');
+  assert.match(paint, /recordRecentSearch\(/, 'a chip tap no longer refreshes its recency');
+
+  // 5. The decisions (cap, FIFO eviction, dedupe) live in search.js — the writer must
+  //    delegate, never hand-roll a second copy of the rules.
+  const rec = fnSlice(app, 'async function recordRecentSearch(');
+  assert.match(rec, /readRecentSearches\(/, 'recordRecentSearch no longer reads through the total parser');
+  assert.match(rec, /pushRecentSearch\(/, 'recordRecentSearch hand-rolls the cap/dedupe — the pure helper is the mechanism');
+  assert.match(rec, /next !== cur/, 'the no-op contract (same reference = no write) is no longer honoured');
+
+  // 6. DEVICE-LOCAL (the contain:/schedlock: rule, and the playedAt rule v1.0.57): the
+  //    history must never ride the Drive doc, the settings channel or the snapshot — a
+  //    sibling's device must not inherit what was searched on this one.
+  for (const mod of ['www/js/drive.js', 'www/js/settings.js', 'www/js/snapshot.js']) {
+    assert.doesNotMatch(CODE.get(mod), /recentsearch/,
+      `${mod} carries search history — it must stay device-local`);
+  }
+});

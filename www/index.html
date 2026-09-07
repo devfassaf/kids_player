@@ -349,6 +349,10 @@
         <input id="search-input" class="input search-input" type="search"
                placeholder="מה מחפשים? 🔍" maxlength="60" autocomplete="off" />
       </header>
+      <!-- v1.0.87: the last searches, one tap to run again. Painted only while the input
+           is EMPTY (results own the screen once a query exists) and only when history
+           exists. Chips are real <button>s — the TV remote must be able to reach them. -->
+      <div id="search-recent" class="search-recent hidden" aria-label="חיפושים אחרונים"></div>
       <main id="search-results" class="grid" aria-label="תוצאות חיפוש"></main>
       <p id="search-empty" class="search-empty hidden">לא מצאנו סרטון כזה 🙈</p>
     </section>
