@@ -32,7 +32,7 @@ import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
-  pipEligibility, pipSkipTarget, miniEligible } from './playerlogic.js';
+  pipEligibility, pipSkipTarget, miniEligible, transportIntent } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -3930,16 +3930,23 @@ async function handlePlaybackCommand(action) {
   // v1.0.84 — toggle works from any LIVE control surface: the notification, the lock-screen
   // widget, a car, a headset (all present whenever the media session is live), or PiP's ⏯.
   if (!bgPlayLive && !pipEnabled) return;
-  if (action === 'toggle') {
+  if (action === 'toggle' || action === 'play' || action === 'pause') {
     const st = playbackState();
     if (!st) return;
+    // v1.0.88 — ONE pure rule for every transport verb (the headset request): 'toggle' flips,
+    // a DIRECTIONAL 'play'/'pause' (a controller's explicit command, the session's
+    // onPlay/onPause/onStop) acts only when it CHANGES the state — it must never invert.
+    // Decided against the LIVE playbackState, never the session's last published state:
+    // the publish rides an async bridge republish and a press can land inside that window.
+    const verb = transportIntent(action, !!st.playing);
+    if (!verb) return; // a satisfied directional verb, or an unknown one, does nothing
     // v1.0.72 — the notification's ⏯ is a person pressing pause, exactly like the centre
     // tap: a call must not resume a song they deliberately stopped from the lock screen.
     markUserToggle(st.playing);
     // the republish rides the player's own play/pause event (onPlayState), so it reports
     // what actually happened rather than what we asked for — a play() the browser refuses
     // must not leave the widget claiming the track is running.
-    if (st.playing) pauseCurrent(); else resumeCurrent();
+    if (verb === 'pause') pauseCurrent(); else resumeCurrent();
     return;
   }
   // v1.0.68 — ⏪/⏩ move INSIDE the track (user request, replacing skip-track). The seek is

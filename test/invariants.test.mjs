@@ -4708,7 +4708,9 @@ test('the lock screen follows the PLAYER, not the last button pressed (v1.0.74)'
   const toggle = cmd.slice(0, cmd.indexOf("action !== 'fwd'"));
   assert.doesNotMatch(toggle, /startBackgroundPlayback\(/,
     'the toggle publishes its own optimistic state instead of waiting for the player');
-  assert.match(toggle, /if \(st\.playing\) pauseCurrent\(\); else resumeCurrent\(\);/,
+  // (v1.0.88 reshaped the line deliberately: the verb comes from pure transportIntent so a
+  // DIRECTIONAL play/pause never inverts — the report-what-happened property is unchanged.)
+  assert.match(toggle, /if \(verb === 'pause'\) pauseCurrent\(\); else resumeCurrent\(\);/,
     'the toggle no longer just asks the player and lets the event report back');
 });
 
@@ -4991,4 +4993,53 @@ test('recent searches: recorded at USE moments only, painted over an empty input
     assert.doesNotMatch(CODE.get(mod), /recentsearch/,
       `${mod} carries search history — it must stay device-local`);
   }
+});
+
+test('a headset/hands-free button pauses or resumes — instantly, directionally, in both java copies (v1.0.88)', () => {
+  // Judged on ONE copy only because the byte-parity assert makes it both.
+  const raw = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
+  assert.equal(raw, readRepo('native-reference/PlaybackService.java'),
+    'the two PlaybackService copies have drifted');
+  const svc = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // 1. THE DISPATCH IS OURS (user request: the answer button pauses/resumes). The framework
+  //    default DELAYS every single press by the double-tap window and picks the direction
+  //    from the last PUBLISHED state — which rides an async bridge republish.
+  const at = svc.indexOf('public boolean onMediaButtonEvent(');
+  assert.ok(at > 0,
+    'onMediaButtonEvent override is gone — the answer button is back on the framework default (delayed, state-guessed)');
+  const body = javaMethodBody(svc, at);
+  for (const code of ['KEYCODE_HEADSETHOOK', 'KEYCODE_MEDIA_PLAY_PAUSE', 'KEYCODE_MEDIA_PLAY', 'KEYCODE_MEDIA_PAUSE']) {
+    assert.match(body, new RegExp(code), `${code} is not handled — that button falls back to the default dispatch`);
+  }
+  // the stateless keys toggle; the directional keys carry their DIRECTION
+  assert.match(body, /isToggleKey \? "toggle"/, 'HEADSETHOOK/PLAY_PAUSE no longer emit toggle');
+  assert.match(body, /KEYCODE_MEDIA_PLAY \? "play" : "pause"/, 'the directional keys lost their direction');
+  // a held button auto-repeats (the dpad.js lesson): emit on the DOWN with repeatCount 0 only
+  assert.match(body, /ACTION_DOWN && ke\.getRepeatCount\(\) == 0/,
+    'a held button would machine-gun transport commands');
+  // the WHOLE key stream of handled codes is consumed, or the framework default
+  // double-handles the same press (one press = two toggles = nothing visibly happens)
+  assert.match(body, /return true;/, 'the handled codes are not consumed — the default dispatch fires a second command');
+  assert.match(body, /return super\.onMediaButtonEvent\(/,
+    'unhandled keys no longer reach the default — NEXT/PREV/REW/FF hardware keys would die');
+
+  // 2. THE TRANSPORT CALLBACKS ARE DIRECTIONAL — every one used to emit "toggle", so an
+  //    explicit PAUSE while paused RESUMED, and STOP while paused STARTED the video.
+  assert.match(svc, /onPlay\(\)\s*\{[^}]*"play"/, 'onPlay no longer emits its directional verb');
+  assert.match(svc, /onPause\(\)\s*\{[^}]*"pause"/, 'onPause no longer emits its directional verb');
+  assert.match(svc, /onStop\(\)\s*\{[^}]*"pause"/, 'onStop lost its pause mapping — stop must never start sound');
+  for (const cb of ['onPlay', 'onPause', 'onStop']) {
+    assert.doesNotMatch(svc, new RegExp(cb + '\\(\\)\\s*\\{[^}]*"toggle"'),
+      `${cb} emits "toggle" again — an explicit command can invert`);
+  }
+
+  // 3. JS routes all three verbs through ONE pure rule, decided against the LIVE player
+  //    state (never the session's last published one).
+  const cmd = fnSlice(CODE.get('www/js/app.js'), 'async function handlePlaybackCommand(');
+  assert.match(cmd, /action === 'toggle' \|\| action === 'play' \|\| action === 'pause'/,
+    "the directional verbs no longer reach the toggle branch — a headset's play/pause command is dropped");
+  assert.match(cmd, /transportIntent\(action, !!st\.playing\)/,
+    'the verb is no longer decided by pure transportIntent against the LIVE state');
+  assert.match(cmd, /if \(!verb\) return;/, 'a satisfied/unknown verb no longer no-ops — a directional command can invert');
 });
