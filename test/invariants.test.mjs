@@ -2110,6 +2110,27 @@ test('ensureSources mints a PROVISIONAL scope that cannot corrupt the backup map
   assert.doesNotMatch(src, /updatedAt: Date\.now\(\)/, 'the provisional mint uses Date.now() again — it will overwrite the real mapping on a signed-out launch');
 });
 
+test('NO provisional sources mint (lib:p: / null scope) carries a live timestamp, anywhere (v1.0.82)', () => {
+  // The v1.0.81 corruption recurred in THREE doors — ensureSources (app.js), doSync (sync2.js)
+  // and the channel-share (share.js) each minted a sources record with a PROVISIONAL scope
+  // (libraryId null → 'lib:p:<id>') and updatedAt: Date.now(). Any of them wins the
+  // profileSources LWW merge in mergeDbFiles and overwrites the REAL lib:<hash> mapping in the
+  // backup — full database, empty home on every device (field-reported, and it took a repaired
+  // Drive doc to recover). A provisional scope MUST carry updatedAt 0; a real mapping (any
+  // positive updatedAt) then always outranks it. This scans EVERY module so a FOURTH door
+  // cannot open silently — the user's own request ("make sure it can't recur elsewhere").
+  //
+  // The legitimate fresh-write in applyRemoteDoc is deliberately NOT matched: it writes
+  // `libraryId: resolveRestoredLibraryId(...)` (the CORRECT mapping, which SHOULD win with a
+  // fresh timestamp), never a `null`/`'lib:p:'` LITERAL — the anchor is the literal, not a call.
+  const provisionalMintWithLiveStamp = /libraryId:\s*(?:null\b|'lib:p:')[\s\S]{0,300}updatedAt:\s*Date\.now\(\)/;
+  for (const [path, code] of CODE) {
+    if (!path.startsWith('www/js/')) continue;
+    assert.doesNotMatch(code, provisionalMintWithLiveStamp,
+      `${path}: a provisional lib:p:/null sources scope is minted with updatedAt: Date.now() — it can win LWW and overwrite the real backup mapping (v1.0.82)`);
+  }
+});
+
 test('the orphan sweep is an UNCONDITIONAL STAGE of every sync (v1.0.38)', () => {
   // THE BUG: planOrphanGC only ever ran inside applySheetMirror, gated on `if (sheetParsed)`
   // — so a profile with NO sheet never swept, which is the normal case since v1.0.32 and the

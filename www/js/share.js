@@ -197,7 +197,12 @@ async function handleSourceShare(pid, c) {
         profileId: pid, schema: 1,
         libraryId: 'lib:p:' + pid,
         defaultAutoApprove: false, maxItemsPerChannel: 500, maxItemsTotal: 5000,
-        drive: (src && src.drive) || { enabled: false }, updatedAt: Date.now()
+        // v1.0.82 — updatedAt 0, NOT Date.now(): this is a PROVISIONAL lib:p: scope, minted
+        // when a channel is shared before the profile has a sources record. Minting it with a
+        // fresh timestamp let it win the profileSources LWW merge and overwrite the real
+        // lib:<hash> mapping in the backup (the v1.0.81 corruption, via a third door). A real
+        // mapping always outranks 0. Same rule as ensureSources / doSync.
+        drive: (src && src.drive) || { enabled: false }, updatedAt: 0
       };
       await db.putSources(src);
     } catch { return 'no-library'; }
