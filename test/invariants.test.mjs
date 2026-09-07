@@ -4218,8 +4218,13 @@ test('the background service is declared, gated, and reachable only from the app
   for (const a of ['ACTION_REWIND', 'ACTION_FAST_FORWARD']) {
     assert.ok(svc.includes(a), `the session does not advertise ${a} — the car button is dead`);
   }
-  assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"fwd"/,
-    'a car skip button does nothing — map it to the same ten seconds rather than leaving it dead');
+  // v1.0.84 — a Bluetooth headset/watch/car's own ⏮/⏭ KEYS change the TRACK (user request,
+  // "להעביר שירים"). The DRAWN lock-screen/car buttons stay the ±10s custom actions above; only
+  // the physical media keys skip. JS owns which track is next (gifts skipped, no wrap).
+  assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"next"/,
+    'a headset/car next button no longer changes track (v1.0.84)');
+  assert.match(svc, /onSkipToPrevious\(\)\s*\{[^}]*"prev"/,
+    'a headset/car previous button no longer changes track (v1.0.84)');
   // v1.0.69 — the seek buttons wear a RING WITH "10" IN IT, not the system's rewind/forward
   // triangles (user request, from a screenshot of Spotify's ⟲15 beside our plain triangle).
   for (const [name, res] of [['back', 'ic_seek_back_10'], ['forward', 'ic_seek_fwd_10']]) {
@@ -4253,6 +4258,39 @@ test('the background service is declared, gated, and reachable only from the app
     assert.match(src, /public void stopBackgroundPlayback\(PluginCall call\)/, `${f}: stop is missing`);
     assert.match(src, /emitPlaybackCommand/, `${f}: the notification buttons reach no one`);
   }
+});
+
+test('the media session is live during ALL playback, for Bluetooth control (v1.0.84)', () => {
+  // User request: a smartwatch/headset/car controls the app during ordinary viewing — not only
+  // when the opt-in background-playback setting is on. So the session/notification is armed
+  // whenever a video PLAYS (any engine, mediaSessionActive), and the transport commands are
+  // gated on the session being LIVE (bgPlayLive), never on the bgPlay SETTING (bgPlayEnabled).
+  // If arming reverts to backgroundPlayDecision, the whole feature collapses back to bgPlay-only.
+  const arm = fnSlice(CODE.get('www/js/app.js'), 'async function armBackgroundPlayback(');
+  assert.ok(arm, 'armBackgroundPlayback is gone — re-anchor this guard');
+  assert.match(arm, /mediaSessionActive\(/,
+    'armBackgroundPlayback no longer arms via mediaSessionActive — BT control is back to bgPlay-only (v1.0.84)');
+  assert.doesNotMatch(arm, /backgroundPlayDecision\(/,
+    'armBackgroundPlayback gates the SESSION on the bgPlay setting again — YouTube and screen-on files lose control');
+
+  const cmd = fnSlice(CODE.get('www/js/app.js'), 'async function handlePlaybackCommand(');
+  assert.ok(cmd, 'handlePlaybackCommand is gone — re-anchor this guard');
+  // the transport gates must read the LIVE session, not the setting
+  assert.match(cmd, /if \(!bgPlayLive && !pipEnabled\) return;/,
+    'toggle is gated on the bgPlay setting again, not the live session (v1.0.84)');
+  assert.match(cmd, /if \(!bgPlayLive\) return;/,
+    'the ±10 seek is gated on the bgPlay setting again, not the live session (v1.0.84)');
+  assert.doesNotMatch(cmd, /bgPlayEnabled/,
+    'handlePlaybackCommand consults the bgPlay SETTING — controls would die outside background mode');
+  // ⏮/⏭ (track skip) must route BEFORE any gate, so a headset/PiP both reach it
+  assert.match(cmd, /prev'\s*\|\|\s*action === 'next'\) \{ await pipSkip/,
+    'next/prev no longer route to the track skip first');
+
+  // onAppPause must still gate CONTINUATION on the bgPlay setting (broadening the session must
+  // not start keeping YouTube/any video playing when the screen goes off — v1.0.63 contract).
+  const app = MODULES.get('www/js/app.js');
+  assert.match(app, /backgroundPlayDecision\(\{ enabled: bgPlayEnabled && bgPlayLive/,
+    'onAppPause no longer gates keep-playing on the bgPlay setting — a broadened session would keep everything playing backgrounded');
 });
 
 test('a declared runtime permission is actually REQUESTED (v1.0.64)', () => {
@@ -4689,14 +4727,15 @@ test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding
   const afterAwait = skip.slice(skip.indexOf('await buildPipTrack()'));
   assert.match(afterAwait, /nav\.isActive\('watch'\)/,
     'pipSkip does not re-check the watch view after its await — a retained ⏭ starts a video into a left screen');
-  // routed BEFORE the bgPlay gate: PiP must work with background playback off
+  // routed BEFORE the transport gate: PiP's ⏮/⏭ (and, v1.0.84, a Bluetooth skip) must not be
+  // blocked by the gate that guards ⏯/±10 — pipSkip re-checks everything itself.
   const cmd = fnSlice(app, 'async function handlePlaybackCommand(');
   const route = cmd.indexOf("action === 'prev'");
   assert.ok(route >= 0, 'the PiP ⏮/⏭ verbs are not routed at all');
-  assert.ok(route < cmd.indexOf('bgPlayEnabled'),
-    'prev/next sit behind the bgPlay gate — the PiP buttons die whenever background playback is off');
-  assert.match(cmd, /!bgPlayEnabled && !pipEnabled/,
-    'the ⏯ gate no longer admits PiP — the window\'s pause button dies with bgPlay off');
+  assert.ok(route < cmd.indexOf('!bgPlayLive && !pipEnabled'),
+    'prev/next sit behind the transport gate — the PiP/BT skip buttons die when the gate is closed');
+  assert.match(cmd, /!bgPlayLive && !pipEnabled/,
+    'the ⏯ gate no longer admits PiP — the window\'s pause button dies (v1.0.84 gates on the live session)');
 
   // 5) the idle "עדיין צופים?" is held during PiP — the prompt renders under a window
   //    that forwards no taps, so an unanswerable question would just park the video.
