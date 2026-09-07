@@ -31,7 +31,7 @@ import { rankItems } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
-  fullscreenOrientation, planCallResume, backgroundPlayDecision, opensFullscreen,
+  fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
   pipEligibility, pipSkipTarget, miniEligible } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
@@ -87,7 +87,10 @@ let folderPagerObj = null;
 let giftStates = new Map();           // key -> profileVideoState record (gifts F9, resume v1.0.32)
 let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
 let bgPlayEnabled = false;            // v1.0.63: the active profile's synced 'bgPlay' setting
-let bgPlayLive = false;               // …and whether the foreground service is running now
+let bgPlayLive = false;               // v1.0.84: the media session/service is live for the
+                                      // CURRENT playback (any engine) — the control surface for
+                                      // Bluetooth/lock-screen/car. bgPlayEnabled gates only
+                                      // whether it keeps playing once the screen goes off.
 let pipEnabled = false;               // v1.0.76: the active profile's synced 'pip' setting
 let pipAvailable = false;             // …and whether this device can PiP at all (API 26+, not TV)
 // v1.0.76 — set by the native pipChanged event, which Android fires BEFORE the onPause that
@@ -3729,8 +3732,13 @@ async function backgroundArtwork(item) {
 }
 
 async function armBackgroundPlayback(item) {
-  const want = backgroundPlayDecision({ enabled: bgPlayEnabled, playing: true, item });
-  if (!want.play) { await disarmBackgroundPlayback(); return; }
+  // v1.0.84 — the media session is armed whenever a video PLAYS, for ANY engine (YouTube
+  // included), so a Bluetooth headset/watch/car can control the app during ordinary viewing —
+  // not only under the opt-in background-playback setting. The bgPlay setting no longer gates
+  // the session; it governs only `onAppPause` (keep playing when the screen goes off, files
+  // only). A YouTube video gets the session while the screen is on and simply pauses on
+  // background, because its WebView cannot play throttled.
+  if (!mediaSessionActive({ playing: true, item })) { await disarmBackgroundPlayback(); return; }
   const st = playbackState();
   const ok = await startBackgroundPlayback(item.title || '', true, {
     subtitle: backgroundSubtitle(), artB64: await backgroundArtwork(item),
@@ -3813,7 +3821,9 @@ async function buildPipTrack() {
 /** A ⏮/⏭ from the PiP window. The state is RE-READ after every await (the v1.0.57 rule):
  *  the command is retained natively and can land seconds after the child left the video. */
 async function pipSkip(action) {
-  if (!pipEnabled || !currentWatch || !nav.isActive('watch')) return;
+  // v1.0.84 — also the destination of a Bluetooth/headset/watch/car ⏮/⏭ (a real track change,
+  // the user's request), so it runs whenever the media session is live, not only under PiP.
+  if ((!pipEnabled && !bgPlayLive) || !currentWatch || !nav.isActive('watch')) return;
   if (!pipTrack || pipTrack.scope !== watchCtx.scope || pipTrack.folderId !== watchCtx.folderId) {
     await buildPipTrack();
   }
@@ -3837,13 +3847,15 @@ async function pipSkip(action) {
  * and starting a video then would be a surprise noise rather than a control.
  */
 async function handlePlaybackCommand(action) {
-  // v1.0.76 — the PiP window's ⏮/⏭ are real track skips (user decision 2026-09-06), routed
-  // BEFORE the bgPlay gate: PiP is its own feature and must work with background playback
-  // off. pipSkip re-checks everything itself.
+  // ⏮/⏭ are real TRACK skips (v1.0.76 decision). Routed BEFORE the gates below because they
+  // must work for the PiP window AND — v1.0.84 — a Bluetooth headset/watch/car's own
+  // next/previous buttons (the native session maps them to next/prev). pipSkip re-checks
+  // everything itself (session-live OR pip).
   if (action === 'prev' || action === 'next') { await pipSkip(action); return; }
   if (!currentWatch) return;
-  // the notification's buttons need bgPlay; the PiP window's ⏯ needs pip — either arms ⏯
-  if (!bgPlayEnabled && !pipEnabled) return;
+  // v1.0.84 — toggle works from any LIVE control surface: the notification, the lock-screen
+  // widget, a car, a headset (all present whenever the media session is live), or PiP's ⏯.
+  if (!bgPlayLive && !pipEnabled) return;
   if (action === 'toggle') {
     const st = playbackState();
     if (!st) return;
@@ -3860,9 +3872,10 @@ async function handlePlaybackCommand(action) {
   // clamped inside player.seekRelative, which is the invariant this app has already paid
   // for once: an unclamped forward seek runs past the end and EJECTS the child from the
   // video. Nothing is awaited before it, so the position cannot go stale under us.
-  // (v1.0.76: these two verbs belong to the NOTIFICATION alone, which only exists under
-  // bgPlay — a retained tap delivered after the setting flipped off stays inert.)
-  if (!bgPlayEnabled) return;
+  // (v1.0.84: these ±10 verbs belong to the NOTIFICATION / lock-screen / car custom actions,
+  // which exist whenever the media session is live — a retained tap delivered after the video
+  // was left stays inert because bgPlayLive is false by then.)
+  if (!bgPlayLive) return;
   if (action !== 'fwd' && action !== 'back') return;
   if (seekRelative(action) === null) return;
   const st = playbackState();

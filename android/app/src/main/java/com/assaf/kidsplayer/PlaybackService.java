@@ -100,11 +100,13 @@ public class PlaybackService extends Service {
                     if (ACTION_BACK.equals(action)) KidsNativePlugin.emitPlaybackCommand("back");
                     else if (ACTION_FWD.equals(action)) KidsNativePlugin.emitPlaybackCommand("fwd");
                 }
-                // A head unit's own ⏮/⏭ KEYS still mean something sensible: the same ten
-                // seconds. They are no longer DRAWN anywhere (that is the point above), but a
-                // physical button on a steering wheel must not be dead.
-                @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("fwd"); }
-                @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("back"); }
+                // v1.0.84 — a Bluetooth headset/watch/car's own ⏮/⏭ KEYS change the TRACK (the
+                // user's request, "להעביר שירים"). Still not DRAWN on the lock screen or the car
+                // (those keep the ±10s custom actions above — the library is mostly long
+                // recordings), but a physical media button changes the song. JS owns which
+                // track is next — gifts skipped, no wrap, the same order the grid shows.
+                @Override public void onSkipToNext() { KidsNativePlugin.emitPlaybackCommand("next"); }
+                @Override public void onSkipToPrevious() { KidsNativePlugin.emitPlaybackCommand("prev"); }
             });
             if (Build.VERSION.SDK_INT < 26) {
                 // Pre-Oreo needs these flags for the session to receive media buttons and

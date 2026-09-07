@@ -233,6 +233,24 @@ export function backgroundPlayDecision({ enabled = false, playing = false, item 
 }
 
 /**
+ * v1.0.84 — PURE: should the MEDIA SESSION be live — the notification, the lock-screen widget,
+ * and Bluetooth/headset/watch/car transport control? Whenever a video is PLAYING, for ANY
+ * engine. This is what lets an external controller drive the app during ORDINARY viewing (user
+ * request 2026-09-07), not only when background playback is on.
+ *
+ * The split from `backgroundPlayDecision` is the whole design: this decides whether the CONTROL
+ * SURFACE exists; `backgroundPlayDecision` decides only whether playback CONTINUES once the
+ * screen goes off (files only, opt-in). So YouTube gets a session (play/pause/skip while the
+ * screen is on) but still pauses when backgrounded — a WebView cannot play throttled, which is
+ * why BT control of YouTube is a screen-on affordance. `onAppPause` keeps reading
+ * `bgPlayEnabled && bgPlayLive`, so broadening the session never keeps a video playing that the
+ * bgPlay setting would not have.
+ */
+export function mediaSessionActive({ playing = false, item = null } = {}) {
+  return !!(item && playing);
+}
+
+/**
  * v1.0.76 — PURE: may the HOME button shrink this session into a Picture-in-Picture
  * window? The answer is PUSHED to the native side ahead of time (`setPipState`) because
  * `onUserLeaveHint` is synchronous — the same cached-decision shape as `bgPlayEnabled`.

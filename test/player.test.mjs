@@ -482,6 +482,22 @@ test('backgroundPlayDecision: opt-in, own files only, and never a paused video',
   assert.equal(backgroundPlayDecision().play, false);
 });
 
+test('mediaSessionActive: the CONTROL surface is live whenever a video plays, any engine (v1.0.84)', async () => {
+  const { mediaSessionActive } = await import('../www/js/playerlogic.js');
+  const file = { type: 'file', title: 'שיר' };
+  const yt = { type: 'youtube', id: 'abc' };
+  // Unlike backgroundPlayDecision, the SESSION is live for a playing video regardless of the
+  // bgPlay setting AND regardless of engine — this is what lets a Bluetooth headset/watch/car
+  // control the app during ordinary viewing, YouTube included (while the screen is on).
+  assert.equal(mediaSessionActive({ playing: true, item: file }), true);
+  assert.equal(mediaSessionActive({ playing: true, item: yt }), true, 'YouTube gets a session too');
+  // not playing, or no video → no control surface (nothing to control)
+  assert.equal(mediaSessionActive({ playing: false, item: file }), false);
+  assert.equal(mediaSessionActive({ playing: true, item: null }), false);
+  assert.equal(mediaSessionActive({}), false);
+  assert.equal(mediaSessionActive(), false);
+});
+
 test('seekRelative goes through the CLAMP, on every engine (v1.0.68)', async () => {
   const { tvKeyIntent } = await import('../www/js/playerlogic.js');
   const { SEEK_STEP } = await import('../www/js/config.js');
