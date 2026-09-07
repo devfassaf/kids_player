@@ -693,6 +693,24 @@ test('restoreScopeCorrection: unwinds a wrongly-minted lib:p: scope, never an es
   assert.equal(restoreScopeCorrection(), null);
 });
 
+test('a provisional (updatedAt 0) profileSources mint cannot overwrite a real mapping (v1.0.81)', () => {
+  // THE FIELD CORRUPTION: a signed-out launch made ensureSources mint `lib:p:<pid>`, and the
+  // next push LWW-overwrote the backup's REAL `lib:<hash>` mapping — so every device (even a
+  // fresh reinstall) then read the profile as pointing at an empty scope. The fix mints the
+  // provisional scope with updatedAt 0, so a real mapping (any positive updatedAt) always wins
+  // the merge, in BOTH orders. This is the merge-layer half of the guard.
+  const pid = 'pms8usgfosmhf';
+  const doc = (libraryId, updatedAt) => ({
+    kind: 'kids-player-db', schema: 1, exportedAt: 1, profiles: [], profileState: {}, libraries: {},
+    profileSources: { [pid]: { libraryId, sheetUrl: null, updatedAt } }
+  });
+  const real = doc('lib:455f348c', 1786600520857);
+  const provisional = doc('lib:p:' + pid, 0);
+  assert.equal(mergeDbFiles(real, provisional).profileSources[pid].libraryId, 'lib:455f348c');
+  assert.equal(mergeDbFiles(provisional, real).profileSources[pid].libraryId, 'lib:455f348c',
+    'the provisional mint won the LWW merge and would corrupt the backup map');
+});
+
 test('profileSources carries the SCOPE, and a migrated entry keeps sheetUrl falsy', () => {
   // THE COMPATIBILITY HINGE: a v1.0.37 device's own `if (!ps.sheetUrl) continue` guard is what
   // makes the new document harmless to it. That only holds while a migrated entry's sheetUrl
