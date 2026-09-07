@@ -173,8 +173,17 @@ public class PlaybackService extends Service {
             PlaybackState.Builder st = new PlaybackState.Builder()
                 .setActions(PlaybackState.ACTION_PLAY | PlaybackState.ACTION_PAUSE
                     | PlaybackState.ACTION_PLAY_PAUSE | PlaybackState.ACTION_STOP
-                    // kept so a steering wheel's own ⏪/⏩ keys still reach us: advertised
-                    // actions decide what is DRAWN, hardware media buttons arrive regardless
+                    // v1.0.84 → v1.0.85 FIELD FIX. SKIP is advertised so an EXTERNAL CONTROLLER
+                    // (a smartWATCH, a car head unit) actually SENDS next/previous: a
+                    // MediaController shows and sends only the actions the session ADVERTISES.
+                    // v1.0.70 removed these on the belief that "hardware buttons arrive
+                    // regardless of advertising" — true for a wired headset's KEY event, but NOT
+                    // for a watch controller: a device reported pause working and skip doing
+                    // nothing. The ±10 SEEK stays a CUSTOM action (its ring icon, the v1.0.70
+                    // fix), and the skip triangles the system draws for these now correctly
+                    // CHANGE TRACK — which is exactly what the user asked the watch to do.
+                    | PlaybackState.ACTION_SKIP_TO_NEXT | PlaybackState.ACTION_SKIP_TO_PREVIOUS
+                    // kept so a steering wheel's own ⏪/⏩ keys still reach us
                     | PlaybackState.ACTION_REWIND | PlaybackState.ACTION_FAST_FORWARD)
                 .addCustomAction(new PlaybackState.CustomAction.Builder(
                     ACTION_BACK, "10 שניות אחורה", R.drawable.ic_seek_back_10).build())
