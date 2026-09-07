@@ -116,6 +116,9 @@ const SAFE_ON_TIE = {
   // v1.0.86: a tap opens the video in FULLSCREEN — today's behaviour, and the default.
   // TRUE on a tie: there is no safety asymmetry in either direction here, so the tie keeps
   // the shipped behaviour rather than surprising a family with windowed opens nobody chose.
+  // (The generic string fallback below happens to answer true for a boolean tie as well —
+  // 't' > 'f' — but that is a lexicographic accident, not a decision; this entry is the
+  // decision, and the invariants suite pins its presence.)
   openFullscreen: true
 };
 

@@ -273,6 +273,39 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.86 — **A TAP CAN OPEN A VIDEO WINDOWED INSTEAD OF FULLSCREEN** (user request): a new
+  per-profile settings flag, "לחיצה על סרטון פותחת אותו במסך מלא", **ON by default** (today's
+  behaviour, so a family that never opens the screen sees no change), **SYNCED** through the
+  v1.0.25 channel like every control flag.
+  - **IT IS THE v1.0.73 PURE DECISION, ONE PARAMETER WIDER**: `opensFullscreen(item, enabled
+    = true)` — the automatic fullscreen is refused when `enabled === false`. ⚠️ **ONLY AN
+    EXPLICIT false OPTS OUT**, the same fail-toward-status-quo direction as the audio rule:
+    the flag rides a settings store that can be unwritten, junk, or a peer's older document,
+    and every one of those must keep today's fullscreen rather than quietly open videos
+    windowed. The default-`true` parameter is load-bearing — every legacy caller (autoplay
+    chain, tests) keeps the shipped behaviour untouched. Audio still opts out regardless
+    (v1.0.73), so the flag only ever ADDS the ability to open a *video* windowed.
+  - **THE CALL SITE PASSES A CACHED MODULE FLAG** (`openFullscreenEnabled`), never an awaited
+    read — `openWatch` consults it INSIDE the tap gesture and the v1.0.2 rule forbids an
+    `await` before `enterPlayerFullscreen()` (it would void the user activation and the
+    request would be denied). Refreshed in `loadGiftStates` (the `resumeEnabled` shape) with
+    the **OPPOSITE catch direction**: a failed settings read falls back to `true`, because an
+    unreadable store must never strand the child in the windowed player nobody chose.
+  - **ONLY THE AUTOMATIC OPEN IS GOVERNED — ⛶ STAYS** (user decision 2026-09-07): the HUD's
+    fullscreen button still enlarges by hand in either state, so "windowed" is a default, not
+    a prohibition. `SAFE_ON_TIE: openFullscreen → true` (no safety asymmetry either way, so a
+    tie keeps the shipped behaviour — note the generic string fallback happens to answer the
+    same for a boolean tie, so the entry is pinned in invariants, not settings.test).
+  - Applies on Android TV too (same call site). A peer's change lands on the next home entry,
+    the resume/bgPlay latency. 1 unit test (`opensFullscreen` with the flag) + the tie pin +
+    the v1.0.40/73 guard extended (the call passes the cached flag; strict-false gate) + a new
+    end-to-end wiring guard + a per-profile on-the-wire merge test (the sync the user asked to
+    verify), every guard proven red on a planted regression (8). **Browser-verified end to
+    end through the real PIN gate and the real toggle**: default ON opened a file/video
+    fullscreen and an audio file windowed; the toggle rendered checked with the child's name
+    and the hint; switching it OFF wrote `openFullscreen:{v:false}` to the synced channel and
+    the SAME video then opened windowed with ZERO fullscreen requests, while ⛶ still enlarged
+    it.
 - v1.0.85 — **A SMARTWATCH'S NEXT/PREVIOUS NOW ACTUALLY SKIPS** (field report on v1.0.84: pause
   worked from the watch, but its ⏮/⏭ did nothing). ⚠️ **A MediaController (a smartwatch, a car
   head unit) SENDS only the transport actions the session ADVERTISES.** v1.0.70 removed

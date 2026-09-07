@@ -100,7 +100,11 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   assert.equal(mergeSettingEntry('resume', e(true, 7), e(false, 7)).v, false, 'start over');
   assert.equal(mergeSettingEntry('resume', e(false, 7), e(true, 7)).v, false);
   // v1.0.86: open-in-fullscreen — no safety asymmetry either way, so the tie keeps the
-  // shipped behaviour (fullscreen, the default) instead of surprising a family windowed
+  // shipped behaviour (fullscreen, the default) instead of surprising a family windowed.
+  // ⚠️ These two assertions pin the BEHAVIOUR, not the SAFE_ON_TIE entry: the generic
+  // string fallback happens to answer true for a boolean tie too ('t' > 'f'), so deleting
+  // the entry leaves them green — proven by planting exactly that. The entry itself (the
+  // decision, not the lexicographic accident) is pinned in invariants.test.mjs.
   assert.equal(mergeSettingEntry('openFullscreen', e(true, 7), e(false, 7)).v, true, 'keep fullscreen');
   assert.equal(mergeSettingEntry('openFullscreen', e(false, 7), e(true, 7)).v, true);
   // no safe direction (an opaque PIN hash): deterministic by value, still order-free
