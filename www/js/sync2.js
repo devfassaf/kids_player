@@ -117,7 +117,12 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     profileId, schema: 1, sheetUrl: null, libraryId: null,
     shareIntent: { enabled: true, requireApproval: true },
     defaultAutoApprove: false, maxItemsPerChannel: 500, maxItemsTotal: 5000,
-    drive: { enabled: false }, updatedAt: Date.now()
+    // v1.0.82 — updatedAt 0, NOT Date.now(): a sources record minted here (a sync running
+    // before the profile has one — e.g. after a wipe, or before the first pull) carries a
+    // PROVISIONAL lib:p: scope below. It must never win the profileSources LWW merge and
+    // overwrite the real lib:<hash> mapping in the backup (the v1.0.81 corruption, via a
+    // second door). A real mapping always outranks 0. Same rule as ensureSources.
+    drive: { enabled: false }, updatedAt: 0
   };
   // A stable library even without a sheet (channels added from the parent UI).
   if (!src.libraryId) {
