@@ -27,7 +27,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES,
   PIP_TRACK_MAX, TAP_SLOP_PX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
-import { rankItems } from './search.js';
+import { rankItems, readRecentSearches, pushRecentSearch } from './search.js';
 import { toast } from './ui/toast.js';
 import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
@@ -3322,6 +3322,7 @@ async function openFolderSearch() {
   $('search-results').innerHTML = '';
   $('search-empty').classList.add('hidden');
   buildFolderSearchIndex(folderId).catch(() => {});
+  refreshRecentSearches().catch(() => {}); // v1.0.87: ONE history — a query is a query in either scope
   setTimeout(() => { try { $('search-input').focus(); } catch {} }, 60);
 }
 
@@ -3334,7 +3335,70 @@ async function openSearch() {
   $('search-results').innerHTML = '';
   $('search-empty').classList.add('hidden');
   buildSearchIndex().catch(() => {});
+  refreshRecentSearches().catch(() => {});
   setTimeout(() => { try { $('search-input').focus(); } catch {} }, 60);
+}
+
+/* ---------------- Recent searches (v1.0.87) ---------------- */
+// The last RECENT_SEARCH_MAX queries, newest first, one tap to run again (user request:
+// "אם אני רוצה לחפש משהו פעמיים הוא כבר מופיע לי"). DEVICE-LOCAL per profile, the playedAt
+// rule (v1.0.57): what was searched on this tablet is about this tablet, and a sibling on
+// a shared account must not inherit it — an invariant pins the key out of drive/settings/
+// snapshot. The pure decisions (cap, FIFO eviction, dedupe-to-front, junk tolerance) live
+// in search.js beside the ranking and are node-tested.
+//
+// A query is recorded where it proves USEFUL — a tapped result, Enter (the keyboard's 🔍),
+// a chip tap — NEVER from the input event: the search renders per keystroke, so recording
+// there would fill all ten slots with prefixes of one search ("ד", "דינ", "דינו"…).
+const recentSearchKey = (pid) => 'recentsearch:' + pid;
+
+async function recordRecentSearch(query) {
+  const pid = activeProfileId;
+  if (!pid) return;
+  try {
+    const k = recentSearchKey(pid);
+    const cur = readRecentSearches(await prefGet(k));
+    const next = pushRecentSearch(cur, query);
+    if (next !== cur) await prefSet(k, JSON.stringify(next)); // same reference = nothing to write
+  } catch {} // history must never take the search down with it
+}
+
+/** Paint (or hide) the recent-searches row. Hidden FIRST, synchronously — a stale row from
+ *  the previous open (possibly another profile's) must never flash while the read runs.
+ *  Painted only when the input is still EMPTY and the profile has not changed under the
+ *  await (the logoTarget rule: a late read never paints into a screen that moved on). */
+async function refreshRecentSearches() {
+  const host = $('search-recent');
+  if (!host) return;
+  host.classList.add('hidden');
+  host.innerHTML = '';
+  const pid = activeProfileId;
+  if (!pid || $('search-input').value.trim()) return;
+  let list = [];
+  try { list = readRecentSearches(await prefGet(recentSearchKey(pid))); } catch {}
+  if (pid !== activeProfileId || $('search-input').value.trim() || !nav.isActive('search')) return;
+  if (!list.length) return;
+  const label = document.createElement('div');
+  label.className = 'recent-label';
+  label.textContent = '🕒 חיפושים אחרונים';
+  host.appendChild(label);
+  const row = document.createElement('div');
+  row.className = 'recent-chips';
+  for (const q of list) {
+    const b = document.createElement('button');
+    b.type = 'button'; // a real button — the TV remote must reach it (html.tv button:focus)
+    b.className = 'recent-chip';
+    b.textContent = q;
+    b.addEventListener('click', () => {
+      $('search-input').value = q;
+      recordRecentSearch(q); // reusing a saved search refreshes its recency
+      host.classList.add('hidden');
+      renderSearchResults().catch(() => {}); // immediate — a chip tap should not wait out the debounce
+    });
+    row.appendChild(b);
+  }
+  host.appendChild(row);
+  host.classList.remove('hidden');
 }
 
 async function renderSearchResults() {
@@ -8628,9 +8692,30 @@ function wire() {
     });
   }
   $('search-input').addEventListener('input', () => {
+    // v1.0.87: chips hide the moment typing starts (refreshRecentSearches hides
+    // synchronously before its read) and return when the input is cleared. The input
+    // event must NEVER record history — it fires per keystroke, and recording it would
+    // fill the whole list with prefixes of one search.
+    refreshRecentSearches().catch(() => {});
     clearTimeout(searchTimer);
     searchTimer = setTimeout(() => { renderSearchResults().catch(() => {}); }, 180);
   });
+  // v1.0.87 — Enter (the on-screen keyboard's 🔍 key) records the query and closes the
+  // keyboard: pressing "search" is the moment the child SAYS this query mattered. Results
+  // already render live from the input event; blur() hands the screen back to them.
+  $('search-input').addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    recordRecentSearch($('search-input').value);
+    try { $('search-input').blur(); } catch {}
+  });
+  // v1.0.87 — a tapped RESULT is the strongest "this search was useful" signal (every tile
+  // is a <button>). CAPTURE phase: the tile's own handler navigates away, and the query
+  // must be read before anything moves.
+  $('search-results').addEventListener('click', (e) => {
+    if (e.target && e.target.closest && e.target.closest('button')) {
+      recordRecentSearch($('search-input').value);
+    }
+  }, true);
 
   // ✋ — the child's way out of a chain. Same destination a video END has with continuous
   // play OFF: the folder they came from, not the home screen.

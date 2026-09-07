@@ -135,6 +135,14 @@ export const EMPTY_FOLDER_GRACE_MS = 10 * 60 * 1000;
 export const FOLDER_SEARCH_MAX_PER_FOLDER = 2000;
 export const FOLDER_SEARCH_MAX_TOTAL = 6000;
 
+/* v1.0.87 — RECENT SEARCHES (user request): the search screen remembers the last N
+   queries, newest first, so searching the same thing twice is one tap. Entry N+1 evicts
+   the OLDEST — the user's own spec: the 11th search pushes the last one out, so the list
+   can never grow past this. The history is DEVICE-LOCAL per profile (the playedAt rule,
+   v1.0.57 — what was searched on this tablet is about this tablet), stored in Preferences
+   under `recentsearch:<pid>`; an invariant pins the key out of drive/settings/snapshot. */
+export const RECENT_SEARCH_MAX = 10;
+
 /* Rejected archive (v1.0.26) — a rejection is recoverable for this long, then the record
    is permanently deleted (delete + deny tombstone, exactly what "מחק לצמיתות" does).
    Long enough that a parent who changes their mind has a real window; short enough that

@@ -273,6 +273,52 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.87 — **THE SEARCH SCREEN REMEMBERS THE LAST 10 SEARCHES** (user request: "אם אני
+  רוצה לחפש משהו פעמיים הוא כבר מופיע לי"; the 11th search evicts the OLDEST, so the ten
+  most recent always remain). Tappable 🕒 chips under the search bar, shown only while the
+  input is EMPTY — results own the screen once a query exists — and hidden when there is no
+  history. One history serves BOTH the home search and the v1.0.58 folder-scoped search (a
+  query is a query in either scope); a chip tap fills the input and renders immediately,
+  skipping the 180ms debounce.
+  - **THE PURE DECISIONS LIVE IN [search.js](www/js/search.js) BESIDE THE RANKING**
+    (`readRecentSearches` / `pushRecentSearch`, node-tested; `RECENT_SEARCH_MAX = 10` in
+    config.js is their one cap — a guard pins that app.js delegates and never hand-rolls a
+    second copy). Both are TOTAL: the list lives in Preferences, which can hold junk, and
+    junk must read as "no history", never a thrown search screen. **Dedupe is by
+    `normalizeTitle`, the same key the ranking matches by** — "פרפרים" and "פַּרְפָּרִים 🦋" are
+    ONE intent and must not burn two of the ten slots; a repeat MOVES to the front carrying
+    the newest typed form. A junk-length entry is DROPPED, never truncated (a slice can cut
+    a surrogate pair in half — the normalizeProfileName lesson). "Nothing to record"
+    returns the SAME array reference so the caller can skip the Preferences write.
+  - **A QUERY IS RECORDED WHERE IT PROVES USEFUL, NEVER PER KEYSTROKE**: a tapped result
+    (a CAPTURE listener on the grid — the tile's own handler navigates away, so the query
+    must be read before anything moves), Enter (the on-screen keyboard's 🔍 — which also
+    `blur()`s the input to hand the screen back to the results), and a chip tap (reusing a
+    saved search refreshes its recency). The input event renders per keystroke, so
+    recording THERE would fill all ten slots with prefixes of one search ("ד", "דינ",
+    "דינו"…) — guard-pinned by ABSENCE in the input handler. A query below `rankItems`' own
+    minLength (2, normalized) is never recorded: it can never show results, so its chip
+    would run a search that finds nothing.
+  - **DEVICE-LOCAL PER PROFILE** (`recentsearch:<pid>` in Preferences), the playedAt rule
+    (v1.0.57): what was searched on this tablet is about this tablet, and a sibling on a
+    shared account must not inherit it. An invariant pins the key out of
+    drive/settings/snapshot, the `contain:` pattern.
+  - **THE PAINT HIDES FIRST, SYNCHRONOUSLY** (`refreshRecentSearches`): the row is hidden
+    and emptied BEFORE the async Preferences read, so a stale row — possibly ANOTHER
+    PROFILE's history — can never flash on open; after the await the profile and the input
+    are RE-CHECKED (the logoTarget rule: a late read never paints into a screen that moved
+    on). Chips are real `<button>`s — the TV focus ring covers `button`, and a div is
+    unreachable from a remote. Erasing the query brings the chips back (the input listener
+    refreshes the row outside the render debounce, so they hide the instant typing starts).
+  - 4 unit tests + 1 invariants guard (13 assertions), every guard proven red on a planted
+    regression (11 plants: eviction, dedupe, a dead open path, keystroke recording, the
+    capture flag, hide-before-read, a hand-rolled cap, the key leaking into drive.js, Enter
+    silent, div chips, the profile re-check). **Browser-verified end to end on the live app
+    (22 checks)**: a fresh profile, a seeded record, the result-tap recording before
+    navigation, Enter recording + blurring, chips newest-first, a chip tap filling and
+    rendering immediately, clearing the input restoring the row, 11 searches leaving
+    exactly 10 chips with the oldest evicted, a repeat moving to the front without growing
+    the list, and a 1-char query never recorded.
 - v1.0.86 — **A TAP CAN OPEN A VIDEO WINDOWED INSTEAD OF FULLSCREEN** (user request): a new
   per-profile settings flag, "לחיצה על סרטון פותחת אותו במסך מלא", **ON by default** (today's
   behaviour, so a family that never opens the screen sees no change), **SYNCED** through the
