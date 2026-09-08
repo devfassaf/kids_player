@@ -29,7 +29,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
 import { rankItems, readRecentSearches, pushRecentSearch } from './search.js';
 import { toast } from './ui/toast.js';
-import { planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
+import { planAutoplay, autoplayNextTarget, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
   pipEligibility, pipSkipTarget, miniEligible, transportIntent } from './playerlogic.js';
@@ -3661,11 +3661,26 @@ async function onVideoFinished(reason = 'ended') {
 
   let next = null;
   if (enabled) {
-    try { next = await nextAfter(watchCtx.scope, watchCtx.folderId, item); } catch { next = null; }
+    // v1.0.89 — the chain SKIPS wrapped gifts instead of stopping at them: the walk hands
+    // back the first NON-gift in the same nextAfter order the grid shows (bounded, one
+    // keyset read per step), and a gift is never opened — the child's own tap unwraps it.
+    // The predicate reads the SAME giftStates map the tiles render by, so the chain can
+    // never disagree with what the child sees wrapped.
+    try {
+      next = await autoplayNextTarget({
+        item,
+        fetchNext: (cur) => nextAfter(watchCtx.scope, watchCtx.folderId, cur),
+        isGift: (key) => {
+          const g = giftStates.get(key);
+          return !!(g && g.giftRank && !g.unwrappedAt);
+        }
+      });
+    } catch { next = null; }
     if (!nav.isActive('watch')) { resetAutoplayChain(); return; }
   }
 
-  // A wrapped gift is a deliberate tap, never something a chain opens for the child.
+  // Second layer (the resolveCuration pattern): the walker never returns a wrapped gift,
+  // and planAutoplay still refuses one — a bug in either cannot OPEN a gift.
   const nextState = next ? giftStates.get(next.key) : null;
   const plan = planAutoplay({
     enabled,
