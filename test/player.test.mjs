@@ -4,10 +4,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { clampSeek, fractionFromX, formatTime, isTapGesture, progressPct, shouldFinishNearEnd, tvKeyIntent, fullscreenOrientation,
-  planAutoplay, nextInOrder, previewEmbedUrl, previewBubbleButtons,
+  planAutoplay, autoplayNextTarget, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel } from '../www/js/playerlogic.js';
 import { SEEK_STEP, TAP_DOUBLE_MS, TAP_SINGLE_DELAY, TAP_SLOP_PX,
-  AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS,
+  AUTOPLAY_MAX_FAILURES, AUTOPLAY_COUNTDOWN_MS, AUTOPLAY_RETRY_MS, AUTOPLAY_GIFT_SKIP_MAX,
   RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC } from '../www/js/config.js';
 
 test('clampSeek never runs past the end — a forward seek must not EJECT the child', () => {
@@ -204,11 +204,13 @@ test('the 🎁 folder is NEVER chained, whatever the setting says', () => {
     'even a failure in the gift folder must not start a chain');
 });
 
-test('a chain STOPS at a wrapped gift, in any folder', () => {
-  // Gift state lives per child on the video, so wrapped tiles appear inside channel
-  // folders too — not only in 🎁. The first TAP on one unwraps it and deliberately does
-  // NOT play. A chain that opened it would skip that ritual AND leave the tile wrapped
-  // forever while its video had already been watched.
+test('a chain still REFUSES a wrapped gift — the v1.0.89 backstop layer', () => {
+  // v1.0.89: autoplayNextTarget SKIPS wrapped gifts, so planAutoplay should never be
+  // handed one — but a gift reaching it anyway (a bug upstream) must STOP the chain, never
+  // OPEN the gift: its first TAP unwraps it and deliberately does not play, so a chain
+  // that played it would skip the ritual and leave the tile wrapped forever over a video
+  // already watched. The resolveCuration pattern: the walker is the mechanism, this rule
+  // is the second layer.
   assert.deepEqual(chain({ nextIsGift: true }), { action: 'stop', reason: 'next-is-gift' });
   // it outranks a failure too — a broken video must not "skip" INTO a gift
   assert.equal(chain({ nextIsGift: true, reason: 'error' }).action, 'stop');
@@ -218,6 +220,86 @@ test('a chain STOPS at a wrapped gift, in any folder', () => {
     { action: 'stop', reason: 'end-of-folder' });
   // an already-unwrapped video is a normal video
   assert.deepEqual(chain({ nextIsGift: false }), { action: 'next', reason: 'ended' });
+});
+
+/* ---------------- gift-skipping autoplay walk (v1.0.89) ---------------- */
+
+// A tiny in-memory folder: fetchNext walks an array by key, exactly nextAfter's contract
+// (the item AFTER `cur` in the on-screen order, or null at the end).
+const walkOver = (keys, gifts, over = {}) => autoplayNextTarget({
+  item: { key: keys[0] },
+  fetchNext: (cur) => {
+    const i = keys.indexOf(cur.key);
+    return i >= 0 && i + 1 < keys.length ? { key: keys[i + 1] } : null;
+  },
+  isGift: (k) => gifts.includes(k),
+  ...over
+});
+
+test('autoplayNextTarget: a plain next is returned as-is', async () => {
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], []), { key: 'b' });
+});
+
+test('autoplayNextTarget: a wrapped gift is SKIPPED, never returned', async () => {
+  // THE v1.0.89 fix: planGifts wraps the newest arrivals and channel folders render
+  // newest-first, so the head of every active folder is gifts — v1.0.25's stop-at-gift
+  // ended the chain after one video ("בסיומו חוזרים לתיקיה", the reported bug).
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], ['b']), { key: 'c' });
+  // a RUN of gifts is walked past in one decision
+  assert.deepEqual(await walkOver(['a', 'b', 'c', 'd', 'e'], ['b', 'c', 'd']), { key: 'e' });
+});
+
+test('autoplayNextTarget: only gifts ahead ends the chain honestly', async () => {
+  assert.equal(await walkOver(['a', 'b', 'c'], ['b', 'c']), null);
+  // no next at all
+  assert.equal(await walkOver(['a'], []), null);
+});
+
+test('autoplayNextTarget: the walk is BOUNDED — a gift wall never hangs it', async () => {
+  // The cap mirrors planGifts' own outstanding ceiling: a real library cannot hold a
+  // longer contiguous run, so at the bound the chain ends rather than reads forever.
+  const keys = ['a'];
+  for (let i = 0; i < AUTOPLAY_GIFT_SKIP_MAX + 5; i++) keys.push('g' + i);
+  keys.push('z'); // a playable video PAST the window — must NOT be reached
+  let fetches = 0;
+  const res = await autoplayNextTarget({
+    item: { key: 'a' },
+    fetchNext: (cur) => {
+      fetches += 1;
+      const i = keys.indexOf(cur.key);
+      return i + 1 < keys.length ? { key: keys[i + 1] } : null;
+    },
+    isGift: (k) => k.startsWith('g')
+  });
+  assert.equal(res, null);
+  assert.equal(fetches, AUTOPLAY_GIFT_SKIP_MAX + 1, 'cap skips = cap+1 fetches, no more');
+  // …and the worst REAL case resolves: exactly the ceiling's worth of gifts, then a video
+  const worst = ['a'];
+  for (let i = 0; i < AUTOPLAY_GIFT_SKIP_MAX; i++) worst.push('g' + i);
+  worst.push('z');
+  assert.deepEqual(await walkOver(worst, worst.filter((k) => k.startsWith('g'))), { key: 'z' });
+});
+
+test('autoplayNextTarget is TOTAL: every failure direction is the safe one', async () => {
+  // a throwing gift predicate reads as "gift" — an unknown must never be OPENED
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], [], {
+    isGift: (k) => { if (k === 'b') throw new Error('boom'); return false; }
+  }), { key: 'c' }, 'the unknown was skipped, not opened and not fatal');
+  // a throwing fetch ends the walk — the caller falls back to an honest stop
+  assert.equal(await autoplayNextTarget({
+    item: { key: 'a' }, fetchNext: () => { throw new Error('db'); }
+  }), null);
+  // junk inputs are refusals, never throws
+  assert.equal(await autoplayNextTarget(), null);
+  assert.equal(await autoplayNextTarget({ item: null, fetchNext: () => ({ key: 'b' }) }), null);
+  assert.equal(await autoplayNextTarget({ item: { key: 'a' }, fetchNext: null }), null);
+  // a keyless "next" is a refusal too (a record no chain can open)
+  assert.equal(await autoplayNextTarget({ item: { key: 'a' }, fetchNext: () => ({}) }), null);
+  // a NONSENSE cap falls back to the DEFAULT, never to zero (the planRejectedPurge rule:
+  // a config typo must not silently turn every gift back into a wall)
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], ['b'], { max: NaN }), { key: 'c' });
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], ['b'], { max: -3 }), { key: 'c' });
+  assert.deepEqual(await walkOver(['a', 'b', 'c'], ['b'], { max: 'junk' }), { key: 'c' });
 });
 
 test('a normal end plays the next video, and the last one stops', () => {

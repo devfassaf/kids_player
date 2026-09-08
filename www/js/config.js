@@ -76,6 +76,12 @@ export const AUTOPLAY_RETRY_MS = 4000;   // one retry of the SAME video before m
 // INVARIANT: a chain must be able to END. Without a ceiling, a library with a run of
 // unplayable videos would flip through black screens indefinitely.
 export const AUTOPLAY_MAX_FAILURES = 5;
+// v1.0.89: the chain SKIPS wrapped gifts instead of stopping at them (a gift is opened by
+// the child's own tap, never by a chain — the pipSkipTarget rule). The bound is the gift
+// system's own ceiling: planGifts caps OUTSTANDING gifts at 12 per child, so a longer
+// contiguous run of wrapped tiles cannot exist and a higher cap buys nothing; each step
+// is one keyset read, so the worst case is 13 cheap reads.
+export const AUTOPLAY_GIFT_SKIP_MAX = 12;
 
 /* Resume playback (v1.0.32) — OFF by default, per profile, synced. The POSITION itself is
    DEVICE-LOCAL and never serialized to Drive: it changes every few seconds of watching,

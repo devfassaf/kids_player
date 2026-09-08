@@ -273,6 +273,54 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.89 — **ניגון רציף SKIPS A WRAPPED GIFT INSTEAD OF DYING ON IT** (field report:
+  "למרות שהדגל ״ניגון רציף״ דולק, הסרטון הבא לא מתנגן אלא בסיומו חוזרים לתיקיה" — the flag
+  was on and the chain still popped the child back to the folder).
+  - **ROOT CAUSE, REPRODUCED IN THE BROWSER BEFORE ANY FIX**: the v1.0.25 stop-at-gift rule
+    (`planAutoplay` → `'stop', 'next-is-gift'`) colliding with two other deliberate designs.
+    `planGifts` wraps exactly the NEWEST arrivals, and channel folders render newest-first —
+    so the head of every active channel folder is wrapped gifts, the very next tile after
+    the video the child just watched. The chain therefore died after ONE video on precisely
+    the folders a family actually uses, which is the report verbatim. Traced live:
+    `next= yt:…` → `plan= {"action":"stop","reason":"next-is-gift"}` → `view-folder`.
+  - ⚠️ **THIS SUPERSEDES THE v1.0.25 STOP-AT-GIFT DECISION, DELIBERATELY** (user request
+    2026-09-08: "בסיום סרטון אחד יתנגן הסרטון הבא באופן אוטומטי"). The RITUAL the stop
+    protected is untouched — better protected, in fact: the chain now walks PAST a wrapped
+    gift, **never opening it** (the pipSkipTarget rule, v1.0.63/76: a wrapped gift is
+    SKIPPED, never opened), so the tile stays wrapped for the child's own first tap while
+    the music keeps playing. Stopping had protected the ritual by sacrificing the feature.
+  - **PURE `playerlogic.autoplayNextTarget({ item, fetchNext, isGift, max })`** is the
+    mechanism: an injectable bounded walk over `nextAfter` (one keyset read per step — the
+    folder is never materialized), returning the first NON-gift or null. TOTAL, each
+    failure direction chosen: a THROWING gift predicate reads as "gift" (an unknown must
+    never be OPENED — fail closed; the walk moves past it), a throwing/empty `fetchNext`
+    answers null (an honest end), and a nonsense `max` falls back to the default, never to
+    zero (the planRejectedPurge rule — a config typo must not turn every gift back into a
+    wall). The predicate app.js injects reads the SAME `giftStates` map `tileEl` renders
+    by, so the chain can never disagree with what the child sees wrapped.
+  - **THE BOUND IS THE GIFT SYSTEM'S OWN CEILING** (`AUTOPLAY_GIFT_SKIP_MAX` = 12):
+    `planGifts` caps OUTSTANDING gifts at 12 per child, so a longer contiguous run of
+    wrapped tiles cannot exist and a higher cap buys nothing. Cap SKIPS ⇒ cap+1 fetches,
+    count-pinned by a unit test (the v1.0.58 Drive-walk lesson: bound the LOOP, not just
+    the data — a broken predicate can only truncate, never hang).
+  - **THE v1.0.25 STOP SURVIVES AS THE BACKSTOP** (the resolveCuration pattern: the pure
+    helper is the mechanism, the plan rule is the second layer). `planAutoplay` still
+    answers `'stop', 'next-is-gift'` for a gift that somehow reaches it, so a bug in the
+    walk still cannot OPEN a gift — and the 🎁 folder itself is still never chained
+    (`folderId 'new'` stop untouched). **Only gifts within the window = an honest end**:
+    the chain returns to the folder with no countdown teasing a video that will not come.
+  - 5 unit tests (skip, run-of-gifts, honest end, the exact fetch bound, totality incl.
+    the fail-closed predicate and the nonsense-cap fallback) + 1 invariants guard (the
+    wiring node cannot execute: onVideoFinished delegates to the walker — a bare
+    `nextAfter` read is banned; the injected predicate is anchored INSIDE the call, because
+    the backstop line below it names the same fields and an unanchored match stayed green
+    with the predicate replaced by `() => false`; the backstop and its `nextIsGift` feed
+    pinned; the cap pinned to a live consumer). Every guard proven red on a planted
+    regression (7 plants). **Browser-verified end to end with a stubbed YT engine (12
+    checks)**: וידאו 1 → countdown → וידאו 3 with the wrapped וידאו 2 skipped, never
+    opened, and STILL WRAPPED back in the folder; a folder with only gifts ahead ending
+    honestly at the folder with no countdown and both gifts wrapped.
+
 - v1.0.88 — **A HEADSET'S ANSWER BUTTON PAUSES AND RESUMES THE VIDEO** (user request:
   "לחיצה על כפתור ענה בדיבורית תתחיל ניגון או תעצור בהתאמה"). The v1.0.84 session already
   routed a watch's ⏯; the single-button hands-free path rode the FRAMEWORK's default
@@ -3414,6 +3462,9 @@ pins that the consumers follow the config and that every address is well-formed.
     `tileEl` renders by). Found in the browser, not by reasoning: the first tap on a gift
     unwraps it and deliberately does NOT play, so a chain that called `openWatch` would
     skip the ritual AND leave the tile wrapped forever with its video already watched.
+    ⚠️ **THE STOP HALF IS SUPERSEDED BY v1.0.89**: the chain now SKIPS a wrapped gift
+    (never opening it — the ritual is untouched) instead of ending; the `nextIsGift` stop
+    survives as the backstop layer, and the 🎁 folder is still never chained.
   - **`nextAfter` IS A THIRD MEMBER OF THE PAGINATION FAMILY** and lives beside
     `pageAnyFolder` for the reason that rule exists — "next" must be the tile that FOLLOWS
     ON SCREEN, so it has to know the same folder kinds (`new`/`grp:`/`sheet`/`ch:`+absorbed).

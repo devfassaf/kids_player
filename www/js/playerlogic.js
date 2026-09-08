@@ -7,7 +7,7 @@
 //
 // Imports NOTHING but config.js (which imports nothing), so this sits safely in the
 // `store/classify/csv/util` band and can be imported by player.js and ui/dpad.js alike.
-import { SEEK_STEP, AUTOPLAY_MAX_FAILURES, TAP_SLOP_PX,
+import { SEEK_STEP, AUTOPLAY_MAX_FAILURES, AUTOPLAY_GIFT_SKIP_MAX, TAP_SLOP_PX,
   RESUME_REWIND_SEC, RESUME_MIN_POS_SEC, RESUME_TAIL_SEC,
   CALL_RESUME_MAX_MS } from './config.js';
 
@@ -332,6 +332,44 @@ export function pipSkipTarget({ keys = [], currentKey = null, dir = 1, isGift = 
   return null;
 }
 
+/**
+ * v1.0.89 — the autoplay chain's "next": the first NON-gift after `item`, walking the same
+ * order the grid shows (`fetchNext` is app.js's nextAfter, one keyset read per step, so the
+ * folder is never materialized). A WRAPPED GIFT IS SKIPPED, NEVER OPENED — the pipSkipTarget
+ * rule: the gift's whole ritual is that the child's own FIRST tap unwraps it, so a chain that
+ * played one would skip the ritual and leave the tile wrapped forever over a video already
+ * watched. v1.0.25 STOPPED the chain at a gift instead; superseded 2026-09-08 by the user's
+ * explicit ask — planGifts wraps exactly the NEWEST arrivals and channel folders render
+ * newest-first, so the head of every active folder is gifts and "ניגון רציף" died after one
+ * video, which is the bug as reported ("בסיומו חוזרים לתיקיה").
+ * TOTAL, and each failure direction is deliberate: a throwing isGift reads as "gift" (an
+ * unknown must never be OPENED — fail closed; the walk just moves past it), a throwing or
+ * empty fetchNext ends the walk (null = an honest end of the chain), and the walk is bounded
+ * by `max` skips so a broken predicate can only ever truncate, never hang (the v1.0.58
+ * Drive-walk lesson: a guard is a thing that can break, so bound the LOOP, not just the
+ * data). A nonsense `max` falls back to the default, never to zero (the planRejectedPurge
+ * rule — a config typo must not silently turn every gift back into a wall).
+ */
+export async function autoplayNextTarget({
+  item = null, fetchNext = null, isGift = () => false, max = AUTOPLAY_GIFT_SKIP_MAX
+} = {}) {
+  if (!item || typeof fetchNext !== 'function') return null;
+  const cap = Number.isFinite(max) && max > 0 ? Math.floor(max) : AUTOPLAY_GIFT_SKIP_MAX;
+  let cur = item;
+  // cap SKIPS ⇒ at most cap+1 fetches: with outstanding gifts capped at the same number by
+  // planGifts, the worst real run (all 12 wrapped, then a playable video) still resolves.
+  for (let i = 0; i <= cap; i++) {
+    let next = null;
+    try { next = await fetchNext(cur); } catch { return null; }
+    if (!next || !next.key) return null;
+    let gift = true;
+    try { gift = !!isGift(next.key); } catch { gift = true; } // unknown ⇒ never open
+    if (!gift) return next;
+    cur = next;
+  }
+  return null; // only gifts within the window — the chain ends honestly
+}
+
 
 export function planAutoplay({
   enabled = false, folderId = null, reason = 'ended',
@@ -339,11 +377,12 @@ export function planAutoplay({
 } = {}) {
   if (!enabled) return { action: 'stop', reason: 'disabled' };
   if (folderId === 'new') return { action: 'stop', reason: 'gift' };
-  // A wrapped gift can sit in ANY folder, not just 🎁 — the gift state lives per child on
-  // the video, so a channel folder shows wrapped tiles too. The first TAP on one unwraps
-  // it and deliberately does not play; a chain that just played it would both skip the
-  // ritual and leave the tile wrapped forever while its video had already been watched.
-  // Stopping hands the choice back to the child, which is what a gift is for.
+  // v1.0.89: this stop is the SECOND LAYER now (the resolveCuration pattern — the pure
+  // helper is the mechanism, this line is the backstop). `autoplayNextTarget` walks PAST
+  // wrapped gifts and never returns one, so a `next` that still reads as a gift here means
+  // a bug upstream — and the one thing that must never happen is a chain OPENING a gift:
+  // its first TAP unwraps it and deliberately does not play, so a chain that played it
+  // would skip the ritual and leave the tile wrapped forever over a video already watched.
   if (hasNext && nextIsGift) return { action: 'stop', reason: 'next-is-gift' };
   if (reason === 'error') {
     const n = Number(failures) || 0;

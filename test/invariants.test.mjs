@@ -1032,6 +1032,48 @@ test('continuous play routes through planAutoplay, and onExit says WHY (v1.0.25)
   assert.match(ow.slice(0, 600), /cancelAutoplay\(\)/, 'opening a video does not cancel the countdown');
 });
 
+test('the chain SKIPS wrapped gifts through autoplayNextTarget, and the backstop stays (v1.0.89)', () => {
+  // planGifts wraps the NEWEST arrivals and channel folders render newest-first, so the
+  // head of every active folder is gifts — v1.0.25's stop-at-gift ended "ניגון רציף" after
+  // one video, which is the reported bug ("בסיומו חוזרים לתיקיה"). The fix is two layers,
+  // the resolveCuration pattern: pure autoplayNextTarget walks PAST wrapped gifts (never
+  // opening one — the pipSkipTarget rule), and planAutoplay's next-is-gift stop remains as
+  // the backstop so a bug in the walk still cannot OPEN a gift. The walk itself is
+  // behaviour-tested in player.test.mjs; what node cannot execute is the app.js WIRING,
+  // which is what this pins.
+  const app = MODULES.get('www/js/app.js');
+  const fn = app.slice(app.indexOf('async function onVideoFinished('));
+  const body = fn.slice(0, fn.indexOf('\n}\n') + 1);
+
+  // 1) the next lookup DELEGATES to the walker — a bare nextAfter here is the old bug
+  const callAt = body.indexOf('autoplayNextTarget(');
+  assert.ok(callAt >= 0, 'onVideoFinished no longer routes through autoplayNextTarget');
+  assert.doesNotMatch(body, /next = await nextAfter\(/,
+    'the chain reads its next with a bare nextAfter again — gifts stop it (the v1.0.89 bug)');
+
+  // 2) …and injects the REAL predicate, anchored INSIDE the call: the same giftStates the
+  // tiles render by, wrapped = giftRank && !unwrappedAt. The nextState line below the call
+  // mentions the same fields, so an unanchored match would stay green with the predicate
+  // replaced by () => false — the exact vacuous-guard trap.
+  const callEnd = body.indexOf('});', callAt);
+  assert.ok(callEnd > callAt, 'lost the walker call anchor');
+  const call = body.slice(callAt, callEnd);
+  assert.match(call, /fetchNext:.*nextAfter\(/s, 'the walker no longer walks nextAfter');
+  assert.match(call, /isGift:/, 'the walker call dropped its gift predicate');
+  assert.match(call, /giftStates\.get\(/, 'the predicate stopped reading giftStates');
+  assert.match(call, /giftRank && !g?\.?\w*\.?unwrappedAt|giftRank && !\w+\.unwrappedAt/,
+    'the predicate no longer tests wrapped = giftRank && !unwrappedAt');
+
+  // 3) the backstop: planAutoplay still refuses a gift, and the caller still feeds it
+  const logic = MODULES.get('www/js/playerlogic.js');
+  assert.match(logic, /'next-is-gift'/, "planAutoplay lost its next-is-gift stop — the second layer is gone");
+  assert.match(body, /nextIsGift:/, 'onVideoFinished stopped passing nextIsGift to planAutoplay');
+
+  // 4) the cap is a LIVE constant (the v1.0.37 rule: a constant with no consumer is a lie)
+  assert.match(logic, /max = AUTOPLAY_GIFT_SKIP_MAX/,
+    'autoplayNextTarget no longer defaults its bound to AUTOPLAY_GIFT_SKIP_MAX');
+});
+
 test('deleting a profile actually deletes it, and it STAYS deleted (v1.0.25)', () => {
   // `db.purgeProfile` existed with ZERO CALLERS while the confirm dialog promised
   // "כל הסרטונים של הפרופיל יימחקו. פעולה זו אינה הפיכה". Measured 2026-08-02: a throwaway
