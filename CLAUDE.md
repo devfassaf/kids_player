@@ -273,6 +273,87 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.91 — **A BACKFILL THE CEILING LATCHED IS WALKED AGAIN, ONCE THERE IS ROOM** (the
+  mechanism v1.0.90 deliberately deferred; same field report).
+  - ⚠️ **THE LATCH IS WRITTEN BEFORE ANYTHING JUDGES WHAT IT FETCHED.** sync2 persists
+    `backfillCursor`/`backfillDone` PER PAGE, inside the fetch loop — resumability across
+    kills is the whole point (v1.0.18) — and `planMutations` only sees the candidates
+    afterwards. So a library at `maxTotal` completes the walk, latches `backfillDone: true`,
+    and THEN refuses every brand-new record as 'capped'. `planChannelFetch` reads that latch
+    and answers 'rss' for ever: once the parent frees space the channel recovers only its
+    ~15-video feed window, and the catalogue never returns. Until now the one act that
+    repaired it was removing and re-adding the source (`db.deleteLibraryChannel` rearms the
+    walk), which is exactly what v1.0.90's capped message tells the parent to do — a true
+    instruction, and a strange thing to require of them.
+  - **TWO STEPS, BECAUSE THEY CAN NEVER BE ONE RUN.** The run that reports capped drops is
+    BY DEFINITION at the ceiling, so a one-shot "capped ⇒ re-arm" would fire at precisely
+    the moment there is nowhere to put anything — the runaway, dressed as the fix. The loss
+    is therefore REMEMBERED on the channel (`quota.planCapNote` → `backfillCappedAt`) and
+    the re-arm is a separate question asked on every later run (`quota.planCapRearm`).
+    Nothing else could reconstruct the fact afterwards: **a capped drop writes no record and
+    no tombstone**, so if this run does not write it down, it never happened. It also means
+    the run that finally recovers is producing NO drops at all — the channel is not being
+    walked — which is why `recoverCappedWalks` loops over every subscribed channel and not
+    just today's casualties.
+  - **THE GATE IS HEADROOM (`CAP_REARM_HEADROOM` = 500), AND IT IS ONE RULE FOR BOTH CAP
+    CAUSES.** The TOTAL ceiling needs room or the re-walk refills nothing and simply latches
+    again; the PER-CHANNEL cap (`maxPerChannel` counts new records per RUN, so a >500-video
+    channel drops its tail even in an empty library) needs room for the next slice, and the
+    walk then terminates once the channel is whole. "Is there anywhere to put what we would
+    fetch?" is the only question either cause actually asks. 500 = one full channel's worth,
+    deliberately not a small number: a re-walk costs up to `BACKFILL_PAGE_BUDGET` (40) pages,
+    so a parent deleting three videos must not buy a sweep.
+  - **AND A COOLDOWN, BECAUSE A GUARD IS A THING THAT CAN BREAK** (the v1.0.58 rule: bound
+    the LOOP, not just the data). The page budget is run-WIDE, so one run can never exceed 40
+    pages however many channels re-arm; `CAP_REARM_COOLDOWN_MS` (24h) bounds the DAY, so a
+    library oscillating at the ceiling cannot buy a sweep on every home entry. There is a
+    convergence argument that makes this redundant — everything that frees space writes deny
+    tombstones (`keepNewest`, 🗑️, `purgeRejected`, the rejected expiry), so a re-walk cannot
+    refill what was freed — and a child's tablet should not depend on it being airtight. A
+    blocked recovery KEEPS its note, so it is deferred, never lost.
+  - ⚠️ **EVERY REFUSAL FAILS TOWARD THE STATUS QUO, and that direction IS the safety.**
+    Re-arming wrongly costs quota and a family's mobile data on every sync, for ever;
+    refusing wrongly costs nothing the parent did not already have. So: no API key ⇒ no
+    re-arm (`planChannelFetch` could only answer 'rss', and the note is kept for the day a
+    key arrives); an unreadable `total` or `maxTotal` ⇒ refuse rather than guess; and **a
+    junk margin falls back to the CONFIGURED one, never to zero** — zero is "re-arm the
+    moment one slot opens", i.e. the runaway itself, so it can only ever be a typo (the
+    planRejectedPurge rule, pointed at the dangerous end).
+  - **`noLongForm` IS NOT RESET.** It records a 404 on the derived long-form playlist — a
+    fact about the CHANNEL, nothing to do with the cap — and clearing it would buy a probe on
+    every recovery for a genuinely Shorts-only channel. (`deleteLibraryChannel` does clear
+    it, correctly: an unsubscribe forgets everything we learned.) `playlistsDone` IS reset:
+    the playlists tab latches identically and its output was refused just the same, and its
+    stage is gated behind `backfillDone` so it would otherwise stay closed for ever.
+  - **CHANNELS ONLY.** A standalone playlist (v1.0.26) already re-walks from page one every
+    30 minutes — its stage gates on `lastRssCheckedAt`, not on `backfillDone` — so it has no
+    latch to repair and would only collect a stamp nobody reads.
+  - **BOTH STAMPS ARE PER-DEVICE** (`drive.PER_DEVICE_CHANNEL_FIELDS`, the v1.0.21 rule).
+    They describe THIS device's walk against THIS device's library size, and both directions
+    are wrong if they travel: a peer's `backfillCappedAt` re-arms a walk this device already
+    completed, and a peer's `backfillRearmedAt` silences this device's own recovery for a day.
+  - **`planMutations` NOW REPORTS `counts.total`** — the size the run leaves behind — and the
+    gate reads THAT, never a recount. A second answer to "how full is the library" would let
+    the cap and the thing that undoes it disagree, which is the one pair that must not
+    (the pageAnyFolder/nextAfter rule).
+  - 10 unit tests + 2 invariants guards, every guard proven red on a planted regression (21
+    plants). ⚠️ **TWO GUARDS WERE PROVEN VACUOUS BY THEIR OWN PLANTS**, both classics of this
+    file: an existence check on the stage's call was satisfied by putting `if (false)` in
+    front of it (now pinned as an awaited, unconditional statement), and the dead-constant
+    check was satisfied by the surviving `import` — replacing a fallback with its literal 500
+    left the name in the file AND in the signature default, invisible today because the
+    values are equal and silently wrong the day the constant moves (now the junk FALLBACKS
+    are pinned, the one place no behaviour test can reach).
+  - **Browser-verified end to end against a real 20000-record library** (the ceiling itself,
+    seeded in the real IndexedDB, driven through the real `syncLibrary`): the stamps
+    round-trip; a keyless run keeps the note and re-arms nothing; with a key the noted
+    channel is re-armed — cursor cleared, note consumed — while a channel that lost nothing
+    is untouched, and `planChannelFetch` then answers 'backfill'; the cooldown refuses a
+    second recovery the same day and grants it the next; neither stamp appears in a real
+    `serializeDb` nor is adopted by `mergeChannelForApply`; and THE GATE ITSELF, at the real
+    boundary — **refused at 20000 (0 free) and at 19600 (400 free), recovered at exactly
+    19500 (500 free)**, keeping its note through both refusals.
+
 - v1.0.90 — **THE LIBRARY CEILING ROSE TO 20000, AND A CAPPED IMPORT SAYS THE WAY BACK**
   (field report 2026-09-09, the user's own family: "הערוץ נוסף, אבל הספרייה הגיעה למגבלת
   הסרטונים — 34 סרטונים לא נוספו" on a channel that then held exactly 2 videos).
@@ -303,6 +384,9 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     While the library stays full that would re-walk up to 40 pages per capped channel every
     sync, burning quota and network forever; doing it safely needs a headroom gate and its
     own decisions — a future feature, not a rider on a config change.
+    ⚠️ **DONE IN v1.0.91**, with exactly that gate — see below. The re-add instruction this
+    release added stays correct and stays the parent's own lever; it is no longer the ONLY
+    way back.
   - 1 unit test (the capped message: count, cause, the re-add instruction in both genders,
     the partial-cap clause, junk `capped`), proven red on a planted regression (the old
     wording replanted). The caps themselves stay pinned symbolically (`effectiveCaps`
