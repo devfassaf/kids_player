@@ -1793,6 +1793,12 @@ test('a backfill the CEILING latched is remembered and re-armed — the whole wi
   const call = fnSlice(sync, 'async function doSync(');
   const at = call.indexOf('recoverCappedWalks({');
   assert.ok(at > 0, 'doSync no longer runs the cap-recovery stage — the latch is permanent again');
+  // ⚠️ THE EXISTENCE CHECK ABOVE WAS VACUOUS ON ITS OWN, proven by its own plant: putting
+  // `if (false)` in front of the call left the stage dead and the guard green (the v1.0.56
+  // trap — an existence check that `() => false` satisfies). Pin the STATEMENT: awaited,
+  // unconditional, at doSync's own top level. A conditional or a dropped await fails here.
+  assert.match(call, /\n {2}await recoverCappedWalks\(\{/,
+    'the recovery stage is conditional or un-awaited — it can be dead while this guard passes');
   const args = call.slice(at, call.indexOf('});', at));
   assert.match(args, /total: plan\.counts\.total/,
     'the headroom gate reads a hand-rolled library size — the cap and its undo can now disagree');
@@ -1849,11 +1855,20 @@ test('the cap-recovery margins are LIVE constants, not decoration (v1.0.91)', ()
   // The v1.0.37 rule, applied to the two knobs that bound this feature's cost: a constant
   // nobody reads is a lie, and these two are the ONLY thing standing between a full
   // library and a 40-page sweep per channel on every home entry.
+  const quota = CODE.get('www/js/quota.js');
+  const rearm = fnSlice(quota, 'export function planCapRearm(');
   for (const name of ['CAP_REARM_HEADROOM', 'CAP_REARM_COOLDOWN_MS']) {
     const consumers = [...CODE.entries()]
       .filter(([p, b]) => p !== 'www/js/config.js' && new RegExp(name).test(b))
       .map(([p]) => p);
     assert.deepEqual(consumers, ['www/js/quota.js'], `${name} is dead, or read from a second place`);
+    // ⚠️ THE LINE ABOVE WAS VACUOUS ON ITS OWN, proven by its own plant: replacing the
+    // constant with its literal 500 left the `import` statement — and therefore the name —
+    // in quota.js, so the file still "consumed" it while nothing read it. An IMPORTED but
+    // UNUSED constant is exactly the decoration v1.0.37 exists to ban. Both fallbacks must
+    // be the constant itself, inside the decision that uses them.
+    assert.match(rearm, new RegExp(name),
+      `${name} is imported and never read — planCapRearm hard-codes its own margin again`);
   }
 });
 
