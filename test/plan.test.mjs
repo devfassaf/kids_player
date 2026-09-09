@@ -202,6 +202,29 @@ test('channelAddOutcome: never a bare ✅ over a backlog the child cannot see (v
   assert.match(channelAddOutcome(false, 0, { isPlaylist: true, hasLive: false }), /לא נמצאו בה סרטונים/);
 });
 
+test('channelAddOutcome: a capped import names the count AND the way back (v1.0.90)', () => {
+  // Field report 2026-09-09: a library at MAX_ITEMS_TOTAL imported a 36-video channel as
+  // "2 videos" (the 2 were title-twin merges, which bypass the cap). The old advice ended
+  // "ונסו שוב" — but the backfill cursor advances and latches `backfillDone` while the
+  // plan drops everything as capped, so after freeing space a plain retry brings back only
+  // the RSS window. The honest instruction is remove-and-re-add, and it is pinned here.
+  const full = channelAddOutcome(false, 0, { capped: 34 });
+  assert.match(full, /34/, 'the dropped count must be named');
+  assert.match(full, /למגבלת/, 'the cause is the LIBRARY ceiling, and the message says so');
+  assert.match(full, /הסירו את הערוץ והוסיפו אותו מחדש/,
+    'freeing space alone recovers only the RSS window — the message must say re-add');
+  // Gender follows the noun (the v1.0.26 rule): a playlist is feminine.
+  const pl = channelAddOutcome(false, 0, { capped: 34, isPlaylist: true });
+  assert.match(pl, /הסירו את הרשימה והוסיפו אותה מחדש/);
+  assert.doesNotMatch(pl, /הערוץ/);
+  // A PARTIAL cap still appends its clause to the waiting-backlog sentence.
+  assert.match(channelAddOutcome(false, 12, { capped: 86 }), /86 סרטונים לא נוספו/);
+  assert.match(channelAddOutcome(false, 12, { capped: 86 }), /12 סרטונים ממתינים/);
+  // Junk `capped` never invents the scary message.
+  assert.equal(channelAddOutcome(false, 0, { capped: -3, hasLive: true }), 'הערוץ סונכרן ✅');
+  assert.equal(channelAddOutcome(false, 0, { capped: NaN, hasLive: true }), 'הערוץ סונכרן ✅');
+});
+
 test('planEntryRefresh: the first entry of a launch is unconditional (v1.0.25)', () => {
   // Opening the app is not "flipping between the home and a video". Both throttles exist
   // for the second case, and applying them to the first is how the tablet showed content

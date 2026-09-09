@@ -214,14 +214,18 @@ export const PRUNE_REVIEW_CAP = 200;
 // them. `plan.effectiveCaps` reads them as the FLOOR, which is what heals the profiles
 // already carrying the old 5000.
 export const MAX_ITEMS_PER_CHANNEL = 500;
-// Raised 5000 → 12000 on a MEASUREMENT (2026-08-08, browser, real records): the only
-// cost that grows with library size is `loadMergeIndex` — 114ms @5000, 229ms @10000,
-// 468ms @20000 — and it is paid once per write-generation, not per render (the
-// buildFolders cache, v1.0.20). Paging stayed FLAT (2.8ms → 7.2ms) because it is
-// index-ranged. 12000 holds ~24 channels at the per-channel cap with headroom, and
-// stays near a second even on a tablet several times slower than the measuring machine.
-// The parent had 16 channels and a silent ceiling; that is the bug this number fixes.
-export const MAX_ITEMS_TOTAL = 12000;
+// Raised 5000 → 12000 (v1.0.37) → 20000 (v1.0.90), each time on the SAME MEASUREMENT
+// (2026-08-08, browser, real records): the only cost that grows with library size is
+// `loadMergeIndex` — 114ms @5000, 229ms @10000, 468ms @20000 — and it is paid once per
+// write-generation, not per render (the buildFolders cache, v1.0.20). Paging stayed FLAT
+// (2.8ms → 7.2ms) because it is index-ranged. 20000 is the HIGHEST point that measurement
+// covers — raising past it needs a new measurement, not a bigger number. The other cost
+// that grows is the Drive backup document (~614 B/record uncompacted, v1.0.38): ~12MB per
+// push at this cap, on every device and every mutation debounce — which is why the honest
+// long-term bound is the v1.0.39 rolling window (keepNewest), not this ceiling.
+// v1.0.90 field report: a real family hit 12000 ("הערוץ נוסף אבל רק עם 2 סרטונים" — the 2
+// were title-twin merges, which bypass the cap; all 34 brand-new records were dropped).
+export const MAX_ITEMS_TOTAL = 20000;
 export const QUOTA_DAILY_SOFT_CAP = 8000; // pause backfill before a hard 403
 
 /*
