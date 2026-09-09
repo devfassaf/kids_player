@@ -273,6 +273,41 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.90 — **THE LIBRARY CEILING ROSE TO 20000, AND A CAPPED IMPORT SAYS THE WAY BACK**
+  (field report 2026-09-09, the user's own family: "הערוץ נוסף, אבל הספרייה הגיעה למגבלת
+  הסרטונים — 34 סרטונים לא נוספו" on a channel that then held exactly 2 videos).
+  - **THE DIAGNOSIS WAS THE v1.0.37 MESSAGE DOING ITS JOB**: the library scope really held
+    ~12000 records (`total = existing.size` in `planMutations` counts live + pending +
+    rejected), every brand-new record was refused at the ceiling, and the 2 that "imported"
+    were title-twin MERGES — the twin/prior branches sit ABOVE the cap checks because they
+    do not create records, so a full library still absorbs duplicates. That is correct
+    behaviour, worth knowing: at the cap a new channel imports exactly its overlap with
+    what the family already has, which reads as "the app imported 2 videos" (the v1.0.22
+    field report's shape, this time with the honest message underneath it).
+  - **`MAX_ITEMS_TOTAL` 12000 → 20000 — the SAME measurement, not a new number.** 20000 is
+    the highest point the 2026-08-08 measurement covers (`loadMergeIndex` 468ms @20000,
+    paid once per write-generation; paging flat). Raising past 20000 requires a NEW
+    measurement first — the config comment says so. The cost that keeps growing is the
+    Drive doc: ~614 B/record uncompacted ⇒ ~12MB per push at this cap, so the ceiling is a
+    relief valve, not the answer — **the honest long-term bound is the v1.0.39 rolling
+    window (`keepNewest`)**, which the user enabled as the other half of this decision.
+  - ⚠️ **A CAPPED BACKFILL IS A LATCHED BACKFILL, AND THE OLD MESSAGE'S "ונסו שוב" WAS A
+    FALSE PROMISE.** sync2 persists `backfillCursor`/`backfillDone` per PAGE, during the
+    fetch — BEFORE `planMutations` drops every record as capped. So after freeing space a
+    plain retry recovers only the ~15-video RSS window; the full catalogue never returns on
+    its own. The one act that re-arms the walk is REMOVING AND RE-ADDING the source
+    (`deleteLibraryChannel` rearms the backfill, v1.0.18), and `channelAddOutcome`'s capped
+    branch now says exactly that, gender-agreed per source (ערוץ/רשימה — the v1.0.26 rule).
+    Capped drops write no record and no tombstone, so a re-add loses nothing.
+  - NOT DONE, deliberately: auto-re-arming the backfill when a run reports capped drops.
+    While the library stays full that would re-walk up to 40 pages per capped channel every
+    sync, burning quota and network forever; doing it safely needs a headroom gate and its
+    own decisions — a future feature, not a rider on a config change.
+  - 1 unit test (the capped message: count, cause, the re-add instruction in both genders,
+    the partial-cap clause, junk `capped`), proven red on a planted regression (the old
+    wording replanted). The caps themselves stay pinned symbolically (`effectiveCaps`
+    floors at config; the dead-constant guard), so no test hardcodes the value.
+
 - v1.0.89 — **ניגון רציף SKIPS A WRAPPED GIFT INSTEAD OF DYING ON IT** (field report:
   "למרות שהדגל ״ניגון רציף״ דולק, הסרטון הבא לא מתנגן אלא בסיומו חוזרים לתיקיה" — the flag
   was on and the chain still popped the child back to the folder).

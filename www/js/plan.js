@@ -1755,7 +1755,16 @@ export function channelAddOutcome(approved, count = 0, empty = {}, picked = null
   }
   // The ceiling first: it is the one a parent can act on immediately, and it blocks
   // every source in the library rather than just this one.
-  if (capped) return `${what}, אבל הספרייה הגיעה למגבלת הסרטונים — ${capped} סרטונים לא נוספו. מחקו ערוץ או תוכן שאינו בשימוש ונסו שוב`;
+  // v1.0.90 HONESTY FIX: the old advice ended "ונסו שוב", but freeing space and re-syncing
+  // brings back only the ~15-video RSS window — the backfill cursor advanced and latched
+  // `backfillDone` while planMutations was dropping every record as capped (sync2 persists
+  // the cursor per PAGE, before the plan runs). The one act that re-arms the full walk is
+  // removing and re-adding the source (`deleteLibraryChannel` rearms the backfill, v1.0.18),
+  // so that is what the message says.
+  if (capped) {
+    const readd = isPlaylist ? 'הסירו את הרשימה והוסיפו אותה מחדש' : 'הסירו את הערוץ והוסיפו אותו מחדש';
+    return `${what}, אבל הספרייה הגיעה למגבלת הסרטונים — ${capped} סרטונים לא נוספו. מחקו ערוץ או תוכן שאינו בשימוש, ואז ${readd} כדי למשוך את כל הסרטונים`;
+  }
   // Previously removed: irreversible until now (a channel video has no sheet row to
   // re-add, so no tombstone could ever be revoked). The caller offers the restore.
   if (denied) return `${what}, אבל ${denied} מהסרטונים שלו הוסרו בעבר ולכן לא נוספו`;
