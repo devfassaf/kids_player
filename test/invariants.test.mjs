@@ -1862,14 +1862,19 @@ test('the cap-recovery margins are LIVE constants, not decoration (v1.0.91)', ()
       .filter(([p, b]) => p !== 'www/js/config.js' && new RegExp(name).test(b))
       .map(([p]) => p);
     assert.deepEqual(consumers, ['www/js/quota.js'], `${name} is dead, or read from a second place`);
-    // ⚠️ THE LINE ABOVE WAS VACUOUS ON ITS OWN, proven by its own plant: replacing the
-    // constant with its literal 500 left the `import` statement — and therefore the name —
-    // in quota.js, so the file still "consumed" it while nothing read it. An IMPORTED but
-    // UNUSED constant is exactly the decoration v1.0.37 exists to ban. Both fallbacks must
-    // be the constant itself, inside the decision that uses them.
-    assert.match(rearm, new RegExp(name),
-      `${name} is imported and never read — planCapRearm hard-codes its own margin again`);
   }
+  // ⚠️ THE LINE ABOVE IS VACUOUS ON ITS OWN, and so was a plain name-match inside
+  // planCapRearm — BOTH proven by their own plants. Replacing a fallback with its literal
+  // (`num(headroom, 1, 500)`) leaves the `import` statement AND the signature default
+  // `headroom = CAP_REARM_HEADROOM` carrying the name, so the file still "consumes" it and
+  // the function still mentions it while the junk path reads a frozen copy. That copy is
+  // invisible today (500 === CAP_REARM_HEADROOM) and silently wrong the day the constant
+  // moves — the v1.0.37 disease exactly. Pin the JUNK FALLBACKS, which is the one place a
+  // behaviour test can never reach: both values are equal, so only the source shows it.
+  assert.match(rearm, /num\(headroom, 1, CAP_REARM_HEADROOM\)/,
+    'the junk-margin fallback is a frozen copy of the config value again');
+  assert.match(rearm, /num\(cooldownMs, 0, CAP_REARM_COOLDOWN_MS\)/,
+    'the junk-cooldown fallback is a frozen copy of the config value again');
 });
 
 test('the sync enforces effectiveCaps, never the frozen sources row (v1.0.37)', () => {
