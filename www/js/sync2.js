@@ -23,9 +23,10 @@ import {
   planMutations, planGifts, shouldRecordGiftBaseline,
   acceptRssEntry, acceptPlaylistItem, planPlaylistAdvance, planNoLongForm, planLongFormOutage,
   planChannelLogo, planSyncDispatch, playlistVideoFolder, planRejectedPurge,
-  planOrphanGC, effectiveCaps, orphanSweepValve } from './plan.js';
+  planOrphanGC, effectiveCaps, orphanSweepValve, sourceDrops } from './plan.js';
 import { normalizeTitle } from './normalize.js';
-import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist } from './quota.js';
+import { planChannelFetch, shouldThrottle, shortsPlaylistIdFor, planBackfillPlaylist,
+  planCapNote, planCapRearm } from './quota.js';
 import { QUOTA_DAILY_SOFT_CAP, REJECTED_TTL_DAYS } from './config.js';
 import * as yt from './yt.js';
 import {
@@ -567,6 +568,14 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     await putMeta('dedupe:' + lib, [...plan.mergeReport, ...prevReport].slice(0, 200));
   }
 
+  /* ---------- stage: cap recovery (v1.0.91) ---------- */
+  await recoverCappedWalks({
+    libChannels, drops: plan.drops,
+    // THE library size, from the function that enforced the cap — never recounted here.
+    total: plan.counts.total, maxTotal: effectiveCaps(src).maxTotal,
+    hasKey: !!key, aborted
+  });
+
   /* ---------- stage: titles (persist twice) ---------- */
   const untitled = plan.puts.filter((p) => p.type === 'youtube' && !p.title).map((p) => p.id);
   if (untitled.length) {
@@ -682,6 +691,47 @@ async function doSync(profileId, { onProgress = () => {}, signal, force = false 
     // bare success and the parent was told the channel was empty.
     drops: plan.drops
   };
+}
+
+/**
+ * v1.0.91 — REMEMBER a walk the cap latched, and WALK IT AGAIN once there is room.
+ *
+ * THE DEFECT (see quota.planCapNote for the full statement). `backfillCursor`/
+ * `backfillDone` are persisted PER PAGE inside the fetch loop, before `planMutations`
+ * has judged a single candidate — so a library at `maxTotal` completes the walk, latches
+ * `backfillDone: true`, and then refuses everything it fetched. `planChannelFetch` reads
+ * that latch and answers 'rss' for ever: after the parent frees space the channel
+ * recovers only its ~15-video feed window and the back catalogue never returns. Until
+ * v1.0.91 the ONLY way back was removing and re-adding the source, which is what
+ * v1.0.90's capped message tells the parent to do.
+ *
+ * TWO STEPS, because they can never be the same run: the run that reports capped drops
+ * is BY DEFINITION at the ceiling, so there is no headroom to re-arm into. The loss is
+ * noted on the channel record — nothing else can reconstruct it later, since a capped
+ * drop writes neither a record nor a tombstone — and the re-arm is asked afresh every
+ * run, which is why this loops over EVERY subscribed channel and not just the ones that
+ * dropped something today. On the run that matters, nothing is dropping anything: the
+ * channel is not being walked at all.
+ *
+ * CHANNELS ONLY. A standalone playlist (v1.0.26) already re-walks from page one every 30
+ * minutes — its stage gates on `lastRssCheckedAt`, not on `backfillDone` — so it has no
+ * latch to repair and would only collect a stamp nobody reads.
+ *
+ * Both decisions are PURE and live in quota.js beside `planChannelFetch`, the function
+ * whose latch they repair; nothing here may re-derive them.
+ */
+async function recoverCappedWalks({ libChannels, drops, total, maxTotal, hasKey, aborted }) {
+  try {
+    for (const lc of libChannels || []) {
+      if (aborted && aborted()) break;
+      let ch = await getChannel(lc.channelId);
+      if (!ch) continue;
+      const note = planCapNote(ch, sourceDrops(drops, lc.channelId).capped);
+      if (note.note) { ch = { ...ch, ...note.fields }; await putChannel(ch); }
+      const { rearm, fields } = planCapRearm({ channel: ch, total, maxTotal, hasKey });
+      if (rearm) await putChannel({ ...ch, ...fields });
+    }
+  } catch { /* recovery bookkeeping must never take a sync down with it */ }
 }
 
 /* applySheetMirror (v1.0.10) lived here until v1.0.38. It deleted LIVE records the sheet

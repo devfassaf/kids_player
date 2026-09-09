@@ -902,7 +902,12 @@ export async function deleteLibraryChannel(libraryId, channelId, { tombstone = t
     await putChannel({
       ...ch,
       backfillCursor: null, backfillDone: false, backfillPlaylistId: null,
-      playlistCursor: null, playlistQueue: null, playlistsDone: false, noLongForm: false
+      playlistCursor: null, playlistQueue: null, playlistsDone: false, noLongForm: false,
+      // v1.0.91: the cap-recovery bookkeeping goes with the rest of the progress. The
+      // walk is already re-armed by the lines above, so a surviving `backfillCappedAt`
+      // could only buy one pointless re-arm, and a surviving `backfillRearmedAt` would
+      // hold the re-added channel's FIRST genuine recovery back by up to a day.
+      backfillCappedAt: null, backfillRearmedAt: null
     });
   }
 }

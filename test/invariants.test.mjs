@@ -1766,6 +1766,97 @@ test('the import caps have a LIVE consumer — config.js is not decoration (v1.0
   assert.ok(consumers.includes('www/js/plan.js'), 'effectiveCaps must be the one place the caps come from');
 });
 
+/* ---------------- the ceiling latches the walk (v1.0.91) ---------------- */
+
+test('a backfill the CEILING latched is remembered and re-armed — the whole wiring (v1.0.91)', () => {
+  // NOTHING HERE CAN BE EXECUTED BY A NODE TEST. quota.test.mjs proves the two decisions;
+  // this proves they are actually consulted, with the right inputs, at the right moment —
+  // the v1.0.68 lesson, where a clamp was correct and its caller hand-rolled its own.
+  const sync = CODE.get('www/js/sync2.js');   // comment-stripped: this feature's own
+  const quota = CODE.get('www/js/quota.js');  // prose names every symbol banned below
+  const drive = CODE.get('www/js/drive.js');
+  const db = CODE.get('www/js/db.js');
+
+  /* 1. the stage exists, and BOTH halves of it are wired. Noting without re-arming
+   *    remembers a loss nothing ever acts on; re-arming without noting can never fire,
+   *    because the run that caps has no headroom and no later run has any drops. */
+  const stage = fnSlice(sync, 'async function recoverCappedWalks(');
+  assert.match(stage, /planCapNote\(/, 'the capped loss is no longer remembered — nothing can act on it later');
+  assert.match(stage, /planCapRearm\(/, 'the walk is never re-armed — the note is written and read by no one');
+  assert.match(stage, /sourceDrops\(drops, lc\.channelId\)/,
+    'the note no longer reads the per-source attribution — every channel would be stamped, or none');
+  assert.match(stage, /putChannel\(/, 'the decisions are computed and never persisted');
+
+  /* 2. THE GATE'S INPUTS. A wrong `total` is the runaway itself: too low and every sync
+   *    re-walks 40 pages per channel into a library with no room. It must be THE number
+   *    planMutations enforced the cap with, and the ceiling must be effectiveCaps'. */
+  const call = fnSlice(sync, 'async function doSync(');
+  const at = call.indexOf('recoverCappedWalks({');
+  assert.ok(at > 0, 'doSync no longer runs the cap-recovery stage — the latch is permanent again');
+  const args = call.slice(at, call.indexOf('});', at));
+  assert.match(args, /total: plan\.counts\.total/,
+    'the headroom gate reads a hand-rolled library size — the cap and its undo can now disagree');
+  assert.match(args, /maxTotal: effectiveCaps\(src\)\.maxTotal/,
+    'the ceiling is a literal again — a profile frozen at 5000 would never recover (v1.0.37)');
+  assert.match(args, /hasKey: !!key/,
+    'a keyless install would burn its note on a walk planChannelFetch can only answer "rss" to');
+  assert.match(args, /drops: plan\.drops/, 'the run\'s attribution never reaches the note');
+
+  /* 3. ORDER. The stage needs plan.drops and plan.counts, so it can only run after
+   *    planMutations — and it must run before doSync returns, not in some later tick. */
+  assert.ok(call.indexOf('planMutations({') < at, 'the recovery stage moved above the plan it reads');
+
+  /* 4. `noLongForm` IS NOT IN THE RE-ARM. It records a 404 on the derived long-form
+   *    playlist — a fact about the channel, unrelated to the cap — and clearing it buys a
+   *    probe on every recovery for a genuinely Shorts-only channel. (db.deleteLibraryChannel
+   *    DOES clear it, correctly: an unsubscribe forgets everything we learned.) */
+  const rearm = fnSlice(quota, 'export function planCapRearm(');
+  assert.match(rearm, /backfillDone: false/, 'the re-arm no longer unlatches the walk it exists to unlatch');
+  assert.match(rearm, /backfillCappedAt: null/,
+    'the note survives the re-arm — every later run re-arms a walk that is already running');
+  assert.doesNotMatch(rearm, /noLongForm/,
+    'the re-arm clears noLongForm: a Shorts-only channel now pays a 404 probe on every recovery');
+
+  /* 5. THE STAMPS ARE PER-DEVICE. Both directions are wrong if they travel: a peer's
+   *    `backfillCappedAt` re-arms a walk THIS device already completed (40 pages for
+   *    nothing), and a peer's `backfillRearmedAt` silences this device's own recovery for
+   *    a day. This is the v1.0.21 rule the whole paging-state list exists for. */
+  const perDevice = drive.slice(drive.indexOf('const PER_DEVICE_CHANNEL_FIELDS = ['));
+  const list = perDevice.slice(0, perDevice.indexOf('];'));
+  for (const f of ['backfillCappedAt', 'backfillRearmedAt']) {
+    assert.match(list, new RegExp(`'${f}'`), `${f} travels to Drive — a peer's stamp now drives this device's walk`);
+  }
+
+  /* 6. An unsubscribe forgets the bookkeeping with the rest of the progress, or a
+   *    re-added channel's FIRST genuine recovery is held back by up to a day. */
+  const del = fnSlice(db, 'export async function deleteLibraryChannel(');
+  assert.match(del, /backfillCappedAt: null, backfillRearmedAt: null/,
+    'a re-added channel inherits the old cap bookkeeping');
+
+  /* 7. ONE implementation. A second hand-rolled gate is how the cap and its undo drift
+   *    apart; only quota.js may name these fields, and only sync2 may consult the plans. */
+  for (const [path, body] of CODE) {
+    if (path === 'www/js/quota.js') continue;
+    if (path === 'www/js/drive.js' || path === 'www/js/db.js') continue; // the two field lists above
+    assert.doesNotMatch(body, /backfillRearmedAt/, `${path} hand-rolls the cap-recovery cooldown`);
+  }
+  const callers = [...CODE.entries()].filter(([p, b]) => p !== 'www/js/quota.js' && /planCapRearm\(/.test(b));
+  assert.deepEqual(callers.map(([p]) => p), ['www/js/sync2.js'],
+    'planCapRearm gained a second caller — the re-walk budget is now spent from two places');
+});
+
+test('the cap-recovery margins are LIVE constants, not decoration (v1.0.91)', () => {
+  // The v1.0.37 rule, applied to the two knobs that bound this feature's cost: a constant
+  // nobody reads is a lie, and these two are the ONLY thing standing between a full
+  // library and a 40-page sweep per channel on every home entry.
+  for (const name of ['CAP_REARM_HEADROOM', 'CAP_REARM_COOLDOWN_MS']) {
+    const consumers = [...CODE.entries()]
+      .filter(([p, b]) => p !== 'www/js/config.js' && new RegExp(name).test(b))
+      .map(([p]) => p);
+    assert.deepEqual(consumers, ['www/js/quota.js'], `${name} is dead, or read from a second place`);
+  }
+});
+
 test('the sync enforces effectiveCaps, never the frozen sources row (v1.0.37)', () => {
   const sync = MODULES.get('www/js/sync2.js');
   const at = sync.indexOf('planMutations({');
