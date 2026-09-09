@@ -228,6 +228,21 @@ export const MAX_ITEMS_PER_CHANNEL = 500;
 export const MAX_ITEMS_TOTAL = 20000;
 export const QUOTA_DAILY_SOFT_CAP = 8000; // pause backfill before a hard 403
 
+// v1.0.91 — how much room must OPEN before a backfill the ceiling latched is walked
+// again (quota.planCapRearm). 500 = MAX_ITEMS_PER_CHANNEL, i.e. "there is room for one
+// more channel's catalogue" — deliberately not a small number: a re-walk costs up to
+// BACKFILL_PAGE_BUDGET (40) pages, so a parent who deletes three videos must not buy a
+// 40-page sweep. At this margin the recovery amortises to ~40 units per 500 recovered
+// videos. A margin BELOW 1 is the runaway this gate exists to prevent, so the helper
+// reads it as a typo and falls back to this value (the planRejectedPurge rule).
+export const CAP_REARM_HEADROOM = 500;
+// …and no channel re-walks more than once a day, whatever the headroom does. The page
+// budget already bounds ONE run at 40 pages across every channel; this bounds the DAY,
+// so a library oscillating around the ceiling cannot buy a sweep on every home entry.
+// A catalogue does not change materially within a day, and the 30-minute RSS pass
+// already carries new uploads — so the cooldown costs the child nothing.
+export const CAP_REARM_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
 /*
  * Hybrid YouTube Data API key (decision 23): a baked-in default ships in the APK so
  * the family gets full channel history with zero setup; the parent screen can override

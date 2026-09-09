@@ -456,6 +456,25 @@ test('caps: per-channel and total', () => {
     candidates: twoChannels, existing: nearFull, denySet: new Set(), caps: { maxPerChannel: 99, maxTotal: 4 }
   });
   assert.equal(full.puts.length, 0, 'a library already at the cap kept importing');
+
+  // v1.0.91 — `counts.total` is the size the run LEAVES BEHIND, and it is the number the
+  // cap-recovery gate (quota.planCapRearm) reads. It must come from here and nowhere
+  // else: a second answer to "how full is the library" would let the cap and the gate
+  // that undoes it disagree, and the channel would re-walk 40 pages into no room at all.
+  assert.equal(capped.counts.total, 4, 'a capped run must report the ceiling it hit');
+  assert.equal(full.counts.total, 4, 'existing records count toward the reported total');
+  // merges and updates do NOT grow it — only brand-new records do
+  const grew = planMutations({
+    candidates: twoChannels, existing: new Map(), denySet: new Set(),
+    caps: { maxPerChannel: 99, maxTotal: 4000 }
+  });
+  assert.equal(grew.counts.total, 10);
+  const again = planMutations({
+    candidates: twoChannels,
+    existing: new Map(grew.puts.map((r) => [r.key, r])),
+    denySet: new Set(), caps: { maxPerChannel: 99, maxTotal: 4000 }
+  });
+  assert.equal(again.counts.total, 10, 're-offering the same videos must not inflate the total');
 });
 
 test('THE assertion: second run over the same inputs yields an empty diff', () => {

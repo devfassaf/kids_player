@@ -176,7 +176,12 @@ export function decidePush({ fileId = null, remoteVersion = null, lastRemoteVers
  */
 const PER_DEVICE_CHANNEL_FIELDS = [
   'backfillCursor', 'backfillPlaylistId', 'backfillDone', 'lastRssCheckedAt',
-  'playlistCursor', 'playlistQueue', 'playlistsDone', 'noLongForm'
+  'playlistCursor', 'playlistQueue', 'playlistsDone', 'noLongForm',
+  // v1.0.91 — the cap-recovery stamps describe THIS device's walk against THIS device's
+  // library size, and both directions are wrong if they travel: a peer's `backfillCappedAt`
+  // would re-arm a walk this device already completed (40 pages for nothing), and a peer's
+  // `backfillRearmedAt` would silence this device's own recovery for a day.
+  'backfillCappedAt', 'backfillRearmedAt'
 ];
 
 /** PURE: strip this device's progress fields from a channel record. */

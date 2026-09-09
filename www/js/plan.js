@@ -1220,7 +1220,11 @@ export function planMutations({ candidates, existing, denySet, now = Date.now(),
   return {
     puts: [...puts.values()],
     newLiveKeys, pendingKeys, mergeReport,
-    counts: { candidates: candidates.length, puts: puts.size, denied: dropsDenied, capped: dropsCapped },
+    // `total` is the library size this run LEAVES BEHIND (existing + brand-new records;
+    // merges and updates do not grow it). v1.0.91 needs it and must not recompute it: a
+    // second answer to "how full is the library" would let the cap and the re-arm gate
+    // disagree, which is precisely the pair that must not (the pageAnyFolder/nextAfter rule).
+    counts: { candidates: candidates.length, puts: puts.size, denied: dropsDenied, capped: dropsCapped, total },
     // v1.0.37: the same numbers, attributed — this is what lets a zero name its cause.
     drops: {
       capped: dropsCapped,

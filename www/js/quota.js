@@ -1,6 +1,8 @@
 // quota.js — YouTube Data API quota discipline. Pure, node-tested.
 // THE rule: never call search.list (100 units). Everything here costs 1 unit/call.
 
+import { CAP_REARM_HEADROOM, CAP_REARM_COOLDOWN_MS } from './config.js';
+
 /** Split ids into API-batch chunks (videos.list / channels.list take up to 50). */
 export function batchIds(ids, size = 50) {
   const uniq = [...new Set(ids)];
@@ -87,6 +89,120 @@ export function planBackfillPlaylist(channel = {}) {
   const earnedOn = channel.backfillPlaylistId || null;
   const hasCursor = !!channel.backfillCursor;
   return { playlistId, resetCursor: hasCursor && earnedOn !== playlistId };
+}
+
+/* ============================================================================
+ * v1.0.91 — A BACKFILL THE LIBRARY CEILING LATCHED CAN BE WALKED AGAIN.
+ *
+ * THE DEFECT. sync2 persists `backfillCursor`/`backfillDone` PER PAGE, inside the fetch
+ * loop — before `planMutations` has seen a single candidate. So when the library is at
+ * `maxTotal`, the walk completes, latches `backfillDone: true`, and every brand-new
+ * record it fetched is then refused as 'capped'. `planChannelFetch` reads that latch and
+ * answers 'rss' for ever after: once the parent frees space the channel recovers only its
+ * ~15-video feed window, and the back catalogue never returns. v1.0.90 fixed the MESSAGE
+ * (it tells the parent to remove and re-add the source, which is the one act that rearms
+ * the walk — db.deleteLibraryChannel); this is the mechanism.
+ *
+ * WHY IT TAKES TWO STEPS AND NOT ONE. In the run that reports the capped drops the
+ * library is BY DEFINITION at the ceiling, so there is no headroom to re-arm into — a
+ * one-shot "capped ⇒ re-arm" would fire exactly when it must not. The loss is therefore
+ * REMEMBERED on the channel (`planCapNote`) and the re-arm is a separate question asked
+ * on every later run (`planCapRearm`). Nothing else can reconstruct the fact afterwards:
+ * a capped drop writes no record and no tombstone.
+ * ========================================================================== */
+
+/** finite number ≥ min, else the fallback. `Number(null) === 0` is the trap this exists
+ *  for (plan.screenOffMinutes): a junk value must never coerce into a meaningful one. */
+function num(v, min, fallback) {
+  return (typeof v === 'number' && Number.isFinite(v) && v >= min) ? v : fallback;
+}
+
+/**
+ * v1.0.91 — PURE: did this run lose content for this source AT A CAP, with nothing left
+ * that will fetch it again? -> { note, fields }
+ *
+ * The note is IDEMPOTENT: a channel already carrying the stamp is not re-stamped, or a
+ * library sitting at the ceiling would rewrite every channel record on every sync (the
+ * churn-free rule this repo pins for planMutations, one store over). The stamp therefore
+ * records the FIRST time the source was refused, which is also the more informative value.
+ *
+ * A walk still IN PROGRESS is never stamped: it has pages left, it will fetch them, and
+ * whichever run finishes it is the run that latches — and stamps.
+ */
+export function planCapNote(channel, cappedCount, now = Date.now()) {
+  const none = { note: false, fields: null };
+  if (!channel || typeof channel !== 'object') return none;
+  if (num(cappedCount, 1, 0) < 1) return none;
+  // Both walks latch the same way and both feed the same cap. `playlistsDone` counts
+  // because the playlists tab is a second source whose output was refused just as the
+  // uploads walk's was (planPlaylistAdvance latches it with no idea what happened next).
+  const latched = channel.backfillDone === true || channel.playlistsDone === true;
+  if (!latched) return none;
+  if (num(channel.backfillCappedAt, 1, 0) > 0) return none; // already remembered
+  return { note: true, fields: { backfillCappedAt: num(now, 1, Date.now()) } };
+}
+
+/**
+ * v1.0.91 — PURE: may this source's walk be re-armed now? -> { rearm, fields }
+ *
+ * ⚠️ EVERY REFUSAL FAILS TOWARD THE STATUS QUO, and that direction is the whole safety
+ * of the feature. Re-arming wrongly costs up to BACKFILL_PAGE_BUDGET pages of quota and a
+ * family's mobile data on EVERY sync, for ever, while the library stays full — the exact
+ * runaway this gate exists to prevent. Refusing wrongly costs nothing the parent did not
+ * already have: v1.0.90's message still names remove-and-re-add as the way back.
+ *
+ * THE GATE IS HEADROOM, and it is the same gate for BOTH cap causes:
+ *  - the TOTAL ceiling (`total >= maxTotal`) — room must have opened, or the re-walk
+ *    refills nothing and simply latches again;
+ *  - the PER-CHANNEL cap (`maxPerChannel` counts new records per RUN, so a >500-video
+ *    channel drops its tail even in an empty library) — room is exactly what lets the
+ *    next run take the next slice, and the walk terminates once the channel is whole.
+ * One rule covers both because "is there anywhere to put what we would fetch?" is the
+ * only question either cause actually asks.
+ *
+ * THE COOLDOWN BOUNDS THE LOOP, NOT JUST THE DATA (the v1.0.58 rule). The convergence
+ * argument — freed slots carry deny tombstones, so a re-walk cannot refill them — is
+ * probably true and is not something a child's tablet should depend on: with the
+ * cooldown, a broken gate can waste one page budget per channel per DAY and no more.
+ *
+ * NOT reset here: `noLongForm`. It records a 404 on the derived long-form playlist —
+ * a fact about the channel, nothing to do with the cap — and clearing it would buy a
+ * probe every recovery for a genuinely Shorts-only channel. (db.deleteLibraryChannel
+ * does clear it, correctly: an unsubscribe forgets everything we learned.)
+ */
+export function planCapRearm({
+  channel, total, maxTotal, hasKey = false,
+  headroom = CAP_REARM_HEADROOM, cooldownMs = CAP_REARM_COOLDOWN_MS, now = Date.now()
+} = {}) {
+  const none = { rearm: false, fields: null };
+  if (!channel || typeof channel !== 'object') return none;
+  // No key ⇒ planChannelFetch can only answer 'rss' ⇒ a re-armed walk fetches NOTHING and
+  // the note would be spent for nothing. Keep it for the day a key arrives.
+  if (!hasKey) return none;
+  if (num(channel.backfillCappedAt, 1, 0) < 1) return none; // nothing was ever lost here
+
+  const t = num(now, 1, Date.now());
+  // A junk margin falls back to the CONFIGURED one, never to zero: zero is "re-arm the
+  // moment a single slot opens", i.e. the runaway itself (the planRejectedPurge rule —
+  // a config typo must not silently invert a feature).
+  const margin = num(headroom, 1, CAP_REARM_HEADROOM);
+  const cool = num(cooldownMs, 0, CAP_REARM_COOLDOWN_MS);
+  if (t - num(channel.backfillRearmedAt, 0, 0) < cool) return none;
+
+  // An unreadable library size or ceiling cannot be gated on — refuse rather than guess.
+  const have = num(total, 0, null);
+  const cap = num(maxTotal, 1, null);
+  if (have === null || cap === null) return none;
+  if (cap - have < margin) return none;
+
+  return {
+    rearm: true,
+    fields: {
+      backfillCursor: null, backfillDone: false, backfillPlaylistId: null,
+      playlistCursor: null, playlistQueue: null, playlistsDone: false,
+      backfillCappedAt: null, backfillRearmedAt: t
+    }
+  };
 }
 
 /**
