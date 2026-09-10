@@ -4488,9 +4488,15 @@ test('the media session is live during ALL playback, for Bluetooth control (v1.0
     'the ±10 seek is gated on the bgPlay setting again, not the live session (v1.0.84)');
   assert.doesNotMatch(cmd, /bgPlayEnabled/,
     'handlePlaybackCommand consults the bgPlay SETTING — controls would die outside background mode');
-  // ⏮/⏭ (track skip) must route BEFORE any gate, so a headset/PiP both reach it
-  assert.match(cmd, /prev'\s*\|\|\s*action === 'next'\) \{ await pipSkip/,
-    'next/prev no longer route to the track skip first');
+  // ⏮/⏭ (track skip) must route BEFORE any gate, so a headset/PiP both reach it. Pinned as
+  // an ORDER rather than a one-liner (v1.0.92 gave the branch a floating-mini route): the
+  // gates below answer for the ±10/toggle surfaces and would refuse a legitimate skip.
+  const skipAt = cmd.indexOf("action === 'prev' || action === 'next'");
+  assert.ok(skipAt > 0, 'next/prev are no longer routed at all');
+  assert.ok(skipAt < cmd.indexOf('if (!currentWatch) return;'),
+    'next/prev no longer route to the track skip FIRST — a gate below now answers for them');
+  assert.match(cmd.slice(skipAt, cmd.indexOf('if (!currentWatch) return;')), /Skip\(/,
+    'the next/prev branch no longer reaches a track skip');
 
   // onAppPause must still gate CONTINUATION on the bgPlay setting (broadening the session must
   // not start keeping YouTube/any video playing when the screen goes off — v1.0.63 contract).
@@ -5165,8 +5171,10 @@ test('a headset/hands-free button pauses or resumes — instantly, directionally
   for (const code of ['KEYCODE_HEADSETHOOK', 'KEYCODE_MEDIA_PLAY_PAUSE', 'KEYCODE_MEDIA_PLAY', 'KEYCODE_MEDIA_PAUSE']) {
     assert.match(body, new RegExp(code), `${code} is not handled — that button falls back to the default dispatch`);
   }
-  // the stateless keys toggle; the directional keys carry their DIRECTION
-  assert.match(body, /isToggleKey \? "toggle"/, 'HEADSETHOOK/PLAY_PAUSE no longer emit toggle');
+  // the stateless keys toggle (v1.0.92: through togglePressVerb, which is what makes a
+  // rapid SECOND press a track change); the directional keys carry their DIRECTION
+  assert.match(body, /isToggleKey \? togglePressVerb\(\)/,
+    'HEADSETHOOK/PLAY_PAUSE no longer route through togglePressVerb — the answer button lost pause or lost skip');
   assert.match(body, /KEYCODE_MEDIA_PLAY \? "play" : "pause"/, 'the directional keys lost their direction');
   // a held button auto-repeats (the dpad.js lesson): emit on the DOWN with repeatCount 0 only
   assert.match(body, /ACTION_DOWN && ke\.getRepeatCount\(\) == 0/,
@@ -5175,7 +5183,7 @@ test('a headset/hands-free button pauses or resumes — instantly, directionally
   // double-handles the same press (one press = two toggles = nothing visibly happens)
   assert.match(body, /return true;/, 'the handled codes are not consumed — the default dispatch fires a second command');
   assert.match(body, /return super\.onMediaButtonEvent\(/,
-    'unhandled keys no longer reach the default — NEXT/PREV/REW/FF hardware keys would die');
+    'an unhandled key no longer reaches the default dispatch at all');
 
   // 2. THE TRANSPORT CALLBACKS ARE DIRECTIONAL — every one used to emit "toggle", so an
   //    explicit PAUSE while paused RESUMED, and STOP while paused STARTED the video.
@@ -5195,4 +5203,86 @@ test('a headset/hands-free button pauses or resumes — instantly, directionally
   assert.match(cmd, /transportIntent\(action, !!st\.playing\)/,
     'the verb is no longer decided by pure transportIntent against the LIVE state');
   assert.match(cmd, /if \(!verb\) return;/, 'a satisfied/unknown verb no longer no-ops — a directional command can invert');
+});
+
+test("a headset/hands-free forward+back key changes track, in both java copies (v1.0.92)", () => {
+  // Field report: "יש מקשי קדימה/אחורה בדיבורית והם לא מחליפים סרטון". PURE JAVA — no node
+  // test can press a Bluetooth button, so the wiring is all this can pin; the real key is a
+  // DEVICE checklist item. Judged on one copy: the byte-parity assert makes it both.
+  const raw = readRepo('android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java');
+  assert.equal(raw, readRepo('native-reference/PlaybackService.java'),
+    'the two PlaybackService copies have drifted');
+  const svc = raw.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+  // 1. ⏮/⏭ ARE OURS, NOT THE FRAMEWORK DEFAULT'S. They used to fall through to `super`,
+  //    whose dispatch gates NEXT/PREVIOUS on the advertised actions and on framework state
+  //    we do not own — which is how v1.0.85 shipped an unproven "fix" that still did
+  //    nothing on a real kit. One code path, no per-OEM default in the middle.
+  const at = svc.indexOf('public boolean onMediaButtonEvent(');
+  assert.ok(at > 0, 'the onMediaButtonEvent override is gone');
+  const body = javaMethodBody(svc, at);
+  assert.match(body, /KEYCODE_MEDIA_NEXT[\s\S]{0,80}KEYCODE_MEDIA_PREVIOUS/,
+    '⏮/⏭ are no longer classified here — they are back on the framework default dispatch');
+  // ⚠️ THE CLASSIFICATION IS NOT THE CONSUMPTION. The first version of this guard checked
+  // only the two key codes, and a plant that dropped isSkipKey from the branch CONDITION
+  // left the declaration behind and the guard GREEN — the keys were classified, dead, and
+  // back on `super`. The v1.0.91 dead-constant trap, verbatim. Pin the live consumer.
+  assert.match(body, /if \(isToggleKey \|\| isDirectionalKey \|\| isSkipKey\)/,
+    'the skip keys are classified but no longer CONSUMED — they fall through to the framework default');
+  assert.match(body, /isSkipKey \? \(code == KeyEvent\.KEYCODE_MEDIA_NEXT \? "next" : "prev"\)/,
+    'the skip keys lost their direction, or no longer emit next/prev at all');
+  // the CONTROLLER path (a watch UI, a car's own button) never comes through the key
+  // handler, so v1.0.84's callbacks must survive alongside it
+  assert.match(svc, /onSkipToNext\(\)\s*\{[^}]*"next"/, 'onSkipToNext no longer emits next — a watch/car controller is dead');
+  assert.match(svc, /onSkipToPrevious\(\)\s*\{[^}]*"prev"/, 'onSkipToPrevious no longer emits prev');
+
+  // 2. ⏪/⏩: SHORT = TRACK, LONG = ±10s (the user's decision). Both halves, and the
+  //    direction of each — an inverted pair would seek where the parent meant to skip.
+  assert.match(body, /KEYCODE_MEDIA_FAST_FORWARD[\s\S]{0,120}KEYCODE_MEDIA_REWIND/,
+    'the ⏪/⏩ keys are no longer handled — they fall back to the ±10 transport callbacks');
+  assert.match(body, /handleSeekKey\(ke, code == KeyEvent\.KEYCODE_MEDIA_FAST_FORWARD\)/,
+    'the ⏪/⏩ branch no longer delegates to handleSeekKey, or lost its direction argument');
+  const seekAt = svc.indexOf('private void handleSeekKey(');
+  assert.ok(seekAt > 0, 'handleSeekKey is gone — the short/long split cannot exist');
+  const seek = javaMethodBody(svc, seekAt);
+  assert.match(seek, /ACTION_UP[\s\S]*?emitPlaybackCommand\(fwd \? "next" : "prev"\)/,
+    'a SHORT press no longer changes track — the reported bug is back');
+  assert.match(seek, /emitPlaybackCommand\(fwd \? "fwd" : "back"\)/,
+    'a LONG press no longer seeks ±10s');
+  assert.match(seek, /if \(!wasLong\)/,
+    'a long press would ALSO change track on release — one press, two actions');
+
+  // 3. ⚠️ THE LONG PRESS IS A TIMER ARMED ON THE DOWN, NEVER getRepeatCount(). An AVRCP
+  //    hold is a press/release pair by spec and frequently produces NO Android auto-repeat,
+  //    so a repeat-driven detector is dead on exactly the Bluetooth devices this is for —
+  //    and the timer is also what makes a missing ACTION_UP seek rather than do nothing.
+  assert.match(seek, /postDelayed\(seekLongTask, SEEK_LONG_PRESS_MS\)/,
+    'the long press is no longer a timer armed on the DOWN — a Bluetooth hold may never auto-repeat');
+  assert.match(seek, /getRepeatCount\(\) > 0\) return;/,
+    'a repeat no longer defers to the timer — a held key could machine-gun ±10s seeks (the v1.0.16 ejection bug)');
+  // fires ONCE per hold: a repeat stream of ±10s jumps runs past the end and ejects the child
+  assert.match(seek, /seekLongTask = null;/, 'the long-press task is not cleared — it could fire more than once per hold');
+  assert.match(svc, /private void cancelSeekLongPress\(\)[\s\S]{0,200}removeCallbacks\(seekLongTask\)/,
+    'a pending ±10 can no longer be cancelled');
+  assert.match(javaMethodBody(svc, svc.indexOf('private void releaseSession()')), /cancelSeekLongPress\(\)/,
+    'a pending ±10 outlives its video — the retained command would land on the next one');
+
+  // 4. THE ONE-BUTTON HANDS-FREE: press 1 pauses INSTANTLY (the user refused any added
+  //    latency), press 2+ inside the window changes track. The window must err SHORT — too
+  //    long and a parent pressing again to RESUME gets the next video instead.
+  const verb = javaMethodBody(svc, svc.indexOf('private String togglePressVerb()'));
+  assert.match(verb, /togglePresses == 1 \? "toggle" : "next"/,
+    'the answer button lost its press-1 = pause / press-2 = skip mapping');
+  assert.match(verb, /SystemClock\.uptimeMillis\(\)/,
+    'the multi-press window is measured off a wall clock — a clock change would widen it');
+  assert.match(verb, /<= MULTI_PRESS_MS/, 'the multi-press window is gone — every press would skip');
+  assert.match(svc, /MULTI_PRESS_MS = 300L/, 'the multi-press window moved off the framework double-tap timeout');
+
+  // 5. THE JS ROUTE. A video FLOATING in the v1.0.77 mini leaves the watch view inactive,
+  //    so pipSkip refuses — a headset ⏭ used to do nothing there. It must change track and
+  //    STAY floating, never yank the child onto the full watch screen.
+  const cmd = fnSlice(CODE.get('www/js/app.js'), 'async function handlePlaybackCommand(');
+  assert.match(cmd, /if \(miniActive\) await miniSkip\(action === 'next' \? 1 : -1\)/,
+    'a headset skip no longer reaches the floating mini-player — the key is silently dead there');
+  assert.match(cmd, /else await pipSkip\(action\)/, 'the docked/PiP skip route is gone');
 });

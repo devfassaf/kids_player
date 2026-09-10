@@ -37,7 +37,10 @@ import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
 import android.os.Build;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.Base64;
 import android.view.KeyEvent;
 
@@ -83,8 +86,99 @@ public class PlaybackService extends Service {
     private Bitmap artwork;
     private String artworkKey;
 
+    // v1.0.92 — MEDIA-KEY STATE. A headset/hands-free is the one control surface where the
+    // SAME physical key must mean two different things depending on how it was pressed, so
+    // the key stream itself has to be remembered between events. Both windows are Android's
+    // own numbers, deliberately: they are what every other media app on the device has
+    // already trained the parent's thumb on.
+    private static final long MULTI_PRESS_MS = 300L;      // the framework's media double-tap window
+    private static final long SEEK_LONG_PRESS_MS = 500L;  // ViewConfiguration's long-press timeout
+    private final Handler keyHandler = new Handler(Looper.getMainLooper());
+    private long lastTogglePressAt = 0L;
+    private int togglePresses = 0;
+    private boolean seekLongFired = false;
+    private Runnable seekLongTask = null;
+
     @Override
     public IBinder onBind(Intent intent) { return null; }
+
+    /**
+     * The answer button of a ONE-BUTTON hands-free, which has no ⏮/⏭ of its own.
+     *
+     * Press 1 is v1.0.88's pause/resume and is dispatched IMMEDIATELY — the user's explicit
+     * choice once the cost was named: telling a single press from a double REQUIRES waiting
+     * out the multi-press window, so an instant pause and a "clean" double-press are
+     * mutually exclusive on one button. Press 2+ inside the window changes track. The only
+     * artifact is that a double-press pauses for ~200ms before the next video starts, which
+     * is inaudible because the next video starts playing anyway.
+     *
+     * ⚠️ THERE IS DELIBERATELY NO TRIPLE-PRESS = PREVIOUS, the usual headset convention.
+     * Press 2 has already fired by then, so a triple would read pause → next → previous and
+     * land the child back on the video they started from; deferring press 2 to find out is
+     * exactly the latency the user refused. Each further press therefore advances one more
+     * track — monotone and predictable, and "previous" lives on the dedicated ⏮/⏪ keys.
+     *
+     * THE WINDOW ERRS SHORT (300ms, the framework's own). Too long and a parent who pauses
+     * and then presses again meaning "resume" gets the next video instead; too short and a
+     * double-press is merely pause+resume — which is the status quo, i.e. harmless. The
+     * clock is uptimeMillis: monotone, so a system clock change cannot widen the window.
+     */
+    private String togglePressVerb() {
+        long now = SystemClock.uptimeMillis();
+        togglePresses = (now - lastTogglePressAt <= MULTI_PRESS_MS) ? togglePresses + 1 : 1;
+        lastTogglePressAt = now;
+        return togglePresses == 1 ? "toggle" : "next";
+    }
+
+    /**
+     * ⏪/⏩ on a headset, a hands-free or a steering wheel: a SHORT press CHANGES TRACK, a
+     * LONG press moves ±10s inside it (the user's decision, 2026-09-10).
+     *
+     * This is the reported bug. Many kits label their forward/back keys ⏮/⏭ while sending
+     * FAST_FORWARD/REWIND, and those keys seeked ten seconds and stayed on the same video —
+     * which reads exactly as "the forward key does not go to the next video". The
+     * notification's own drawn ⏪10/⏩10 stay ±10 (v1.0.68: the library is mostly long
+     * recordings) because they are custom actions and have no press duration at all.
+     *
+     * ⚠️ THE LONG PRESS IS A TIMER ARMED ON THE DOWN, NEVER `getRepeatCount()`. An AVRCP
+     * hold is a press/release pair by spec and frequently produces NO Android auto-repeat,
+     * so a repeat-based detector would leave the long press dead on precisely the Bluetooth
+     * devices this exists for. The timer also FAILS TOWARD DOING SOMETHING: if the UP never
+     * arrives (a stack that delivers only a DOWN) it fires and the key seeks — never
+     * nothing, and the state is cleared so the next press is a clean short press again.
+     *
+     * It fires ONCE per hold. The v1.0.16 TV-remote invariant is that a held key must not
+     * scrub: a repeat stream of ±10s jumps runs past the end, YouTube fires ENDED, and the
+     * child is EJECTED from the video.
+     */
+    private void handleSeekKey(KeyEvent ke, boolean fwd) {
+        if (ke.getAction() == KeyEvent.ACTION_DOWN) {
+            if (ke.getRepeatCount() > 0) return; // the timer owns the hold
+            cancelSeekLongPress();
+            seekLongFired = false;
+            seekLongTask = () -> {
+                seekLongFired = true;
+                seekLongTask = null;
+                KidsNativePlugin.emitPlaybackCommand(fwd ? "fwd" : "back");
+            };
+            keyHandler.postDelayed(seekLongTask, SEEK_LONG_PRESS_MS);
+            return;
+        }
+        if (ke.getAction() == KeyEvent.ACTION_UP) {
+            boolean wasLong = seekLongFired;
+            cancelSeekLongPress();
+            seekLongFired = false;
+            if (!wasLong) KidsNativePlugin.emitPlaybackCommand(fwd ? "next" : "prev");
+        }
+    }
+
+    /** A pending ±10 must never outlive its press — or its video (the "a control for a dead
+     *  video" rule): the command is retained natively and would land on the next one. */
+    private void cancelSeekLongPress() {
+        if (seekLongTask == null) return;
+        keyHandler.removeCallbacks(seekLongTask);
+        seekLongTask = null;
+    }
 
     private MediaSession ensureSession() {
         if (session != null) return session;
@@ -116,6 +210,16 @@ public class PlaybackService extends Service {
                 // default cannot double-handle the same press. Every other key (NEXT/PREVIOUS/
                 // REWIND/FAST_FORWARD) falls through to super, which routes it to the
                 // callbacks below exactly as before.
+                //
+                // v1.0.92 — AND ⏮/⏭ ARE OURS TOO (field report: "יש מקשי קדימה/אחורה בדיבורית
+                // והם לא מחליפים סרטון"). They used to fall through to `super`, whose default
+                // dispatch gates NEXT/PREVIOUS on the actions the session advertises AND on
+                // framework state we do not own — which is why v1.0.85 could ship a fix that
+                // was never device-proven ("a physical watch/car button cannot be proven by
+                // any test") and still not work on a real kit. Owning them is reason 3 above,
+                // applied to the keys the user actually presses: one code path, no per-OEM
+                // default in the middle. onSkipToNext/Previous below stay for CONTROLLERS (a
+                // watch UI, a car's own button), which never come through here.
                 @Override public boolean onMediaButtonEvent(Intent mediaButtonIntent) {
                     try {
                         KeyEvent ke = mediaButtonIntent == null
@@ -126,9 +230,20 @@ public class PlaybackService extends Service {
                                 || code == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
                             boolean isDirectionalKey = code == KeyEvent.KEYCODE_MEDIA_PLAY
                                 || code == KeyEvent.KEYCODE_MEDIA_PAUSE;
-                            if (isToggleKey || isDirectionalKey) {
+                            boolean isSkipKey = code == KeyEvent.KEYCODE_MEDIA_NEXT
+                                || code == KeyEvent.KEYCODE_MEDIA_PREVIOUS;
+                            // ⏪/⏩ carry TWO meanings and are decided across DOWN and UP, so
+                            // they get their own handler rather than this one-shot branch.
+                            if (code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD
+                                || code == KeyEvent.KEYCODE_MEDIA_REWIND) {
+                                handleSeekKey(ke, code == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD);
+                                return true;
+                            }
+                            if (isToggleKey || isDirectionalKey || isSkipKey) {
                                 if (ke.getAction() == KeyEvent.ACTION_DOWN && ke.getRepeatCount() == 0) {
-                                    KidsNativePlugin.emitPlaybackCommand(isToggleKey ? "toggle"
+                                    KidsNativePlugin.emitPlaybackCommand(
+                                        isSkipKey ? (code == KeyEvent.KEYCODE_MEDIA_NEXT ? "next" : "prev")
+                                        : isToggleKey ? togglePressVerb()
                                         : code == KeyEvent.KEYCODE_MEDIA_PLAY ? "play" : "pause");
                                 }
                                 return true; // consume UP/repeats too — no double-handling
@@ -293,6 +408,7 @@ public class PlaybackService extends Service {
     }
 
     private void releaseSession() {
+        cancelSeekLongPress(); // v1.0.92 — a pending ±10 must not outlive the video
         MediaSession s = session;
         session = null;
         if (s == null) return;
