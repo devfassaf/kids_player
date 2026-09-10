@@ -273,6 +273,81 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
 
+- v1.0.92 — **A HEADSET'S / HANDS-FREE'S FORWARD AND BACK KEYS CHANGE VIDEO** (user request:
+  "בנוסף להשהייה או המשך … גם לדלג לסרטון הבא או לקודם על ידי לחיצה על המקש המתאים קדימה או
+  אחורה בדיבורית" — the v1.0.88 session gave that button pause/resume; this is the other half).
+  - ⚠️ **HALF OF IT ALREADY EXISTED AND STILL DID NOT WORK, WHICH IS THE LESSON.** v1.0.84
+    routed a headset's ⏮/⏭ to a real track change and v1.0.85 shipped a field fix for it —
+    but that release's own note says **"DEVICE-only: a physical watch/car button cannot be
+    proven by any test"**, and nobody ever pressed one. The keys fell through to
+    `super.onMediaButtonEvent`, whose default dispatch gates NEXT/PREVIOUS on the actions
+    the session advertises AND on framework state we do not own. **A "fix" whose only
+    verification is a checklist item nobody ticked is a hypothesis, not a fix.**
+  - **⏮/⏭ ARE OURS NOW** — the same three reasons v1.0.88 took over the toggle keys, reason 3
+    doing the work here: owning the dispatch removes the dependence on per-OEM default
+    behaviour. One code path from key to verb, no framework default in the middle.
+    `onSkipToNext`/`onSkipToPrevious` STAY and are untouched: a CONTROLLER (a smartwatch UI,
+    a car head unit) reaches them directly and never comes through the key handler, so
+    v1.0.85's advertising fix is still load-bearing and must not be undone.
+  - **⏪/⏩ (FAST_FORWARD/REWIND): A SHORT PRESS CHANGES TRACK, A LONG PRESS MOVES ±10s**
+    (user decision 2026-09-10). This is the actual reported failure: **many kits label their
+    forward/back keys ⏮/⏭ while sending FAST_FORWARD/REWIND**, and those went to
+    `onRewind`/`onFastForward` → a ±10s seek — so the key moved ten seconds and stayed on the
+    same video, which reads exactly as "the forward key does not go to the next video". The
+    notification's own drawn ⏪10/⏩10 are UNAFFECTED and still ±10 (v1.0.68: the library is
+    mostly long recordings) — they are custom actions and have no press duration at all.
+  - ⚠️ **THE LONG PRESS IS A TIMER ARMED ON THE DOWN, NEVER `getRepeatCount()`.** An AVRCP
+    hold is a press/release pair by spec and frequently produces NO Android auto-repeat, so
+    a repeat-driven detector would be dead on precisely the Bluetooth devices this exists
+    for. The timer also **fails toward doing something**: if the UP never arrives (a stack
+    that delivers only a DOWN) it fires and the key seeks — never nothing — and it clears its
+    own state so the next press is a clean short press again. It fires **ONCE per hold**: the
+    v1.0.16 rule is that a held key must not scrub, because a stream of ±10s jumps runs past
+    the end, YouTube fires ENDED, and the child is EJECTED from the video. A pending timer is
+    cancelled in `releaseSession` (the "a control for a dead video" rule) — the command is
+    retained natively and would otherwise land on the NEXT video.
+  - **THE ONE-BUTTON HANDS-FREE: PRESS 1 STILL PAUSES INSTANTLY, PRESS 2+ CHANGES TRACK**
+    (`togglePressVerb`, user decision). ⚠️ **AN INSTANT PAUSE AND A "CLEAN" DOUBLE-PRESS ARE
+    MUTUALLY EXCLUSIVE ON ONE BUTTON** — telling one press from two REQUIRES waiting out the
+    window, which is the cost v1.0.88 paid in the other direction and the user refused to pay
+    back. So press 1 is dispatched immediately and the only artifact is that a double-press
+    pauses for ~200ms before the next video starts, which is inaudible because the next video
+    starts playing anyway. **There is deliberately NO triple-press = previous**, the usual
+    headset convention: press 2 has already fired, so a triple would read pause → next →
+    previous and land the child back on the video they started from. Each further press
+    therefore advances one more track — monotone and predictable — and "previous" lives on the
+    dedicated ⏮/⏪ keys. **The window errs SHORT** (300ms, the framework's own media
+    double-tap timeout): too long and a parent who pauses and then presses again meaning
+    "resume" gets the next video, while too short is merely pause+resume — the status quo,
+    i.e. harmless. `SystemClock.uptimeMillis`, so a system clock change cannot widen it.
+  - **A FLOATING VIDEO IS SKIPPABLE TOO** (the one JS line). A video in the v1.0.77 in-app
+    mini leaves the watch view INACTIVE, so `pipSkip` refused and a headset ⏭ was **silently
+    dead there**; it routes to `miniSkip` now — the track changes and the video STAYS
+    floating, exactly like the mini's own ⏮/⏭, because a hardware key must not yank the child
+    back onto the full watch screen.
+  - ⚠️ **KNOWN BOUNDS, stated because they are real and unfixable in the app**: many
+    hands-free kits swallow a double-press themselves ("redial last number") and those
+    presses never reach Android; and a kit that sends only a key DOWN gets the ±10 rather
+    than the track change. Both degrade toward a working button, never a dead one.
+  - 2 invariants guards (the v1.0.84 order pin reshaped to an ORDER rather than a one-liner,
+    the v1.0.88 toggle pin re-aimed at `togglePressVerb`), **every assertion proven red on a
+    planted regression (17 plants)**. ⚠️ **ONE GUARD WAS PROVEN VACUOUS BY ITS OWN PLANT** —
+    the v1.0.91 dead-constant trap verbatim: it checked that the two key codes were
+    CLASSIFIED, and a plant that dropped `isSkipKey` from the branch CONDITION left the
+    declaration behind and the guard GREEN, with the keys classified, dead, and back on
+    `super`. It pins the live consumer now. Both java copies byte-identical; the APK compiles
+    (the text-parity tests cannot see a Java syntax error).
+  - **Browser-verified end to end through the real app with a stubbed bridge**, driving the
+    REAL `playbackCommand` listener the native side emits into: a headset ⏭ walked
+    וידאו 3 → 2 → 1 in the grid's own order and STOPPED at the end (no wrap), ⏮ walked back,
+    and the answer button's toggle still paused and resumed. Then with the video FLOATING in
+    the mini: ⏭ changed track twice and ⏮ once, each time staying `pw-mini` and playing, and
+    the end of the list answered `null` instead of wrapping. **The key-to-verb mapping itself
+    is DEVICE-ONLY** — no browser can press a Bluetooth button — and so is the ±10 half,
+    which the dev server cannot show either (it serves no HTTP `Range`, so nothing is
+    seekable); those verbs are unchanged v1.0.68 code that the notification's drawn buttons
+    already use.
+
 - v1.0.91 — **A BACKFILL THE CEILING LATCHED IS WALKED AGAIN, ONCE THERE IS ROOM** (the
   mechanism v1.0.90 deliberately deferred; same field report).
   - ⚠️ **THE LATCH IS WRITTEN BEFORE ANYTHING JUDGES WHAT IT FETCHED.** sync2 persists

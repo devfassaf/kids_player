@@ -5223,6 +5223,12 @@ test("a headset/hands-free forward+back key changes track, in both java copies (
   const body = javaMethodBody(svc, at);
   assert.match(body, /KEYCODE_MEDIA_NEXT[\s\S]{0,80}KEYCODE_MEDIA_PREVIOUS/,
     '⏮/⏭ are no longer classified here — they are back on the framework default dispatch');
+  // ⚠️ THE CLASSIFICATION IS NOT THE CONSUMPTION. The first version of this guard checked
+  // only the two key codes, and a plant that dropped isSkipKey from the branch CONDITION
+  // left the declaration behind and the guard GREEN — the keys were classified, dead, and
+  // back on `super`. The v1.0.91 dead-constant trap, verbatim. Pin the live consumer.
+  assert.match(body, /if \(isToggleKey \|\| isDirectionalKey \|\| isSkipKey\)/,
+    'the skip keys are classified but no longer CONSUMED — they fall through to the framework default');
   assert.match(body, /isSkipKey \? \(code == KeyEvent\.KEYCODE_MEDIA_NEXT \? "next" : "prev"\)/,
     'the skip keys lost their direction, or no longer emit next/prev at all');
   // the CONTROLLER path (a watch UI, a car's own button) never comes through the key
