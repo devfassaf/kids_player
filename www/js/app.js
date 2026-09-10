@@ -3940,7 +3940,15 @@ async function handlePlaybackCommand(action) {
   // must work for the PiP window AND — v1.0.84 — a Bluetooth headset/watch/car's own
   // next/previous buttons (the native session maps them to next/prev). pipSkip re-checks
   // everything itself (session-live OR pip).
-  if (action === 'prev' || action === 'next') { await pipSkip(action); return; }
+  if (action === 'prev' || action === 'next') {
+    // v1.0.92 — while the video FLOATS (the v1.0.77 in-app mini) the watch view is NOT
+    // active, so pipSkip refuses and a headset's ⏭ silently did nothing. Route to miniSkip
+    // there: it changes track and STAYS floating, exactly like the mini's own ⏮/⏭ buttons —
+    // a hardware key must not yank the child back onto the full watch screen.
+    if (miniActive) await miniSkip(action === 'next' ? 1 : -1);
+    else await pipSkip(action);
+    return;
+  }
   if (!currentWatch) return;
   // v1.0.84 — toggle works from any LIVE control surface: the notification, the lock-screen
   // widget, a car, a headset (all present whenever the media session is live), or PiP's ⏯.
