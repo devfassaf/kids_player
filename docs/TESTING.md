@@ -397,6 +397,26 @@ for anything destructive, and purge it afterwards.
 - [ ] Audio behaves like video by design (v1.0.56 decision): the screen-off/background pause
       and the "עדיין צופים?" prompt apply to a song exactly as to a video.
 
+### Folders across devices (v1.0.94 — the reported bug; device only)
+- [ ] Update a device whose library has songs in folders that LOST their rows (the bare
+      "תיקיה (15)" sections in הוספה): on the first home entry the folders are back on the
+      child's home, named from their songs, 🎵 for music, and searchable by that name.
+- [ ] Parent screen → מקורות → תיקיות: each rebuilt folder's line says it was rebuilt and that
+      pasting the Drive link restores the real name and tree.
+- [ ] Paste the Drive folder link again (one device): "התיקיה שוחזרה! N קבצים חזרו למקומם",
+      the original names and the folder-inside-a-folder layout come back IN PLACE (the same
+      folders, renamed and nested — nothing is deleted or swept), and on the OTHER device too,
+      after its next pull.
+- [ ] Mixed versions: with ONE device still on ≤1.0.93 holding the real folders, update the
+      other and open it — the old device must keep its real folder names (no guessed name may
+      reach it). Then update the old device: its real folders replace the guesses everywhere.
+- [ ] Create a folder on device A → it appears on device B after B's next pull (it never did
+      before v1.0.94). Rename it on B → the new name reaches A, and a pull on B right after the
+      rename does NOT revert it.
+- [ ] Delete a folder on A choosing "keep its videos": on B the folder disappears AND its videos
+      show up in "סרטונים נוספים" (before v1.0.94 they vanished from B's screens).
+- [ ] Give a folder a picture on A → B shows the picture (fetched once), not just the emoji.
+
 ### Links file (v1.0.38 — device only; the suite cannot see any of this)
 - [ ] מקורות → **📤 ייצוא רשימת לינקים**: a real `.txt` lands in
       `Android/data/com.assaf.kidsplayer/files/exports/`, the message NAMES that path, and

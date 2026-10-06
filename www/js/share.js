@@ -161,6 +161,7 @@ async function routeShare(o, { alreadyRouted = false } = {}) {
     publishedAt: null, rowIndex: null, origin: 'share-intent',
     state: requireApproval ? 'pending' : 'live',
     addedAt: now, approvedAt: requireApproval ? null : now,
+    placedAt: now, // v1.0.94 — a placement (normalize.settlePlacement)
     thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
   }]);
   try { onAdded({ key: c.key, title: c.title, pending: requireApproval }); } catch {}

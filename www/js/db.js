@@ -14,6 +14,9 @@
 //     whether a profileVideoState row may be DELETED, and that decision must be
 //     node-testable (this module is not — there is no IndexedDB in node). normalize.js
 //     sits BELOW db in the layer order and imports nothing, so it cannot become a cycle.
+//     v1.0.94 — `placeInto`/`homeOf` ride the same import for the same reason: a move is
+//     decided by the pure parking rule but must be APPLIED to the record as it is NOW,
+//     inside the write transaction (placeVideos), never to a snapshot read earlier.
 //
 // SCOPING (decision 20): content is keyed by scopeId, the first component of every key.
 //   'lib:p:<profileId>'   — a profile's own library: everything the parent added for that
@@ -31,7 +34,7 @@
 // component is missing — so `delete rec.giftRank` on unwrap removes it from the index
 // automatically. The "חדשים 🎁" folder is a pure range scan, no filtering.
 
-import { stateRowIsSpent } from './normalize.js';
+import { stateRowIsSpent, placeInto, homeOf } from './normalize.js';
 
 export const DB_NAME = 'kidsplayer';
 export const DB_VERSION = 3;
@@ -291,6 +294,43 @@ export async function setVideoFields(scopeId, key, patch) {
     const r = videos.get([scopeId, key]);
     r.onsuccess = () => { if (r.result) videos.put({ ...r.result, ...patch, updatedAt: Date.now() }); };
   });
+}
+
+/**
+ * v1.0.94 — MOVE records into folders, decided against each record AS IT IS NOW.
+ *
+ * Every move used to be computed from a snapshot and written back whole (`putVideos` of
+ * `{...snapshot, ...fields}`) — or, at best, as fields computed from the snapshot. Both
+ * revert whatever happened to the record in between: a Drive walk is network-bound and a
+ * resume pull, an approval, a rejection or the sync's enrichment can land on the same record
+ * meanwhile, and the stale write then wins on EVERY device, because it is stamped `placedAt:
+ * now`. Here the parking-aware fields (normalize.placeInto) are computed from the record read
+ * INSIDE the write transaction, and `accept(current, move)` — when given — re-checks the
+ * caller's precondition against that same record, so a move whose reason has gone away is
+ * simply not made.
+ * @param moves  [{ key, folderId, ...anything accept() wants to read }]
+ * -> the keys actually moved
+ */
+export async function placeVideos(scopeId, moves, { accept = null } = {}) {
+  const list = (moves || []).filter((m) => m && m.key && m.folderId);
+  const moved = [];
+  for (let i = 0; i < list.length; i += CHUNK) {
+    const slice = list.slice(i, i + CHUNK);
+    const now = Date.now();
+    await tx(['videos'], 'readwrite', (videos) => {
+      for (const m of slice) {
+        const r = videos.get([scopeId, m.key]);
+        r.onsuccess = () => {
+          const cur = r.result;
+          if (!cur) return;
+          if (typeof accept === 'function' && !accept(cur, m)) return;
+          videos.put({ ...cur, ...placeInto(cur, m.folderId, now), updatedAt: now });
+          moved.push(m.key);
+        };
+      }
+    });
+  }
+  return moved;
 }
 
 /**
@@ -826,6 +866,36 @@ export async function putCustomFolder(rec, { preserveTimestamp = false } = {}) {
   await tx(['customFolders'], 'readwrite', (s) => { s.put(out); });
 }
 
+/**
+ * v1.0.94 — change ONE folder row as it is NOW: read and write in a single transaction.
+ * `change` is a patch, or `(current) => patch | null` (null = leave the row alone — the
+ * caller's precondition no longer holds). A missing row is never created.
+ *
+ * `touch` decides whether this is an EDIT. A rename or a re-parent is (it stamps
+ * `updatedAt`, so drive.mergeCustomFolder lets it win on every device); a Drive-refresh
+ * stamp is NOT — `driveSyncedAt` is this device's own throttle, and stamping `updatedAt`
+ * for it let a refresh running on one tablet beat a rename the parent had just made on the
+ * other: housekeeping winning last-writer-wins over a parental decision, on every device.
+ * The same snapshot-spreading writes also reverted a rename made DURING a long walk.
+ * -> the row as written (or as found, when declined), or null when there is no row
+ */
+export async function updateCustomFolder(scopeId, folderId, change, { touch = true } = {}) {
+  return tx(['customFolders'], 'readwrite', (s) => new Promise((resolve) => {
+    const r = s.get([scopeId, folderId]);
+    r.onsuccess = () => {
+      const cur = r.result;
+      if (!cur) { resolve(null); return; }
+      const patch = typeof change === 'function' ? change(cur) : change;
+      if (!patch) { resolve(cur); return; }
+      const next = { ...cur, ...patch };
+      if (touch) next.updatedAt = Date.now();
+      s.put(next);
+      resolve(next);
+    };
+    r.onerror = () => resolve(null);
+  }));
+}
+
 const cfDelKey = (scopeId) => 'cfDel:' + scopeId;
 export async function getDeletedCustomFolders(scopeId) {
   const raw = await getMeta(cfDelKey(scopeId));
@@ -852,21 +922,85 @@ export async function deleteCustomFolder(scopeId, folderId, { tombstone = true, 
 
 /** Re-home every record filed under `folderId` (live rows by folderId, parked rows by
  *  homeFolderId — a pending video must land in the right place when it is approved).
- *  Returns how many moved. Chunked through putVideos like every other bulk write. */
+ *  Returns how many moved.
+ *  v1.0.94 — stamps `placedAt` (through placeVideos): this is a PLACEMENT the parent made
+ *  (deleting a folder and keeping its videos), and without the stamp the move never reached
+ *  another device — the folder's tombstone did, and the peer's videos stayed filed under a
+ *  folder that no longer existed (normalize.settlePlacement). The candidates come from the
+ *  folder index rather than the whole library, and each move is re-checked against the
+ *  record as it is when written. */
 export async function moveFolderVideos(scopeId, folderId, targetFolderId) {
-  const all = [...(await loadMergeIndex(scopeId)).values()];
-  const now = Date.now();
-  const out = [];
-  for (const rec of all) {
-    const parked = rec.folderId === '~pending' || rec.folderId === '~rejected';
-    const home = parked ? rec.homeFolderId : rec.folderId;
-    if (home !== folderId) continue;
-    out.push(parked
-      ? { ...rec, homeFolderId: targetFolderId, updatedAt: now }
-      : { ...rec, folderId: targetFolderId, homeFolderId: rec.homeFolderId ? targetFolderId : rec.homeFolderId, updatedAt: now });
+  const filed = (await recordsFiledUnder(scopeId, [folderId])).get(folderId) || [];
+  // re-checked inside the write: a record moved elsewhere meanwhile stays where it went
+  const moved = await placeVideos(scopeId, filed.map((r) => ({ key: r.key, folderId: targetFolderId })),
+    { accept: (cur) => homeOf(cur) === folderId });
+  return moved.length;
+}
+
+/** Walk one index range with a cursor; `onEach(cursor)` per entry. Never throws past the
+ *  caller's own try — a rejected request rejects the promise. */
+function walkIndex(index, range, { keysOnly = false } = {}, onEach) {
+  return new Promise((resolve, reject) => {
+    const req = keysOnly ? index.openKeyCursor(range) : index.openCursor(range);
+    req.onsuccess = () => {
+      const c = req.result;
+      if (!c) { resolve(); return; }
+      onEach(c);
+      c.continue();
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
+/**
+ * v1.0.94 — every `cf:` folder this library's videos are FILED under, with how many: live
+ * videos by `folderId`, parked ones (pending / rejected) by `homeFolderId`.
+ *
+ * The live half is a KEY-ONLY scan of the `cf:` slice of `by_folder_sort`, because this
+ * runs on every home entry and the family that reported the bug has 14,000+ videos —
+ * loading them all (loadMergeIndex) would cost a third of a second per entry on a tablet.
+ * The parked half reads values: the home folder is not part of the key, and the parking
+ * slots are small.
+ * -> Map<folderId, count>
+ */
+export async function customFolderUsage(scopeId) {
+  const db = await openDb();
+  const out = new Map();
+  const add = (fid) => { if (fid && String(fid).startsWith('cf:')) out.set(fid, (out.get(fid) || 0) + 1); };
+  const idx = () => db.transaction('videos').objectStore('videos').index('by_folder_sort');
+  await walkIndex(idx(), IDBKeyRange.bound([scopeId, 'cf:', -Infinity], [scopeId, 'cf:￿', Infinity]),
+    { keysOnly: true }, (c) => add(c.key[1]));
+  for (const park of ['~pending', '~rejected']) {
+    await walkIndex(idx(), folderRange(scopeId, park), {}, (c) => add(c.value && c.value.homeFolderId));
   }
-  if (out.length) await putVideos(out);
-  return out.length;
+  return out;
+}
+
+/** v1.0.94 — the records filed under each of `folderIds` (live by folderId, parked by
+ *  homeFolderId): what the orphan repair needs to name a lost folder after its songs.
+ *  -> Map<folderId, record[]> */
+export async function recordsFiledUnder(scopeId, folderIds) {
+  const want = folderIds instanceof Set ? folderIds : new Set(folderIds || []);
+  const db = await openDb();
+  const out = new Map([...want].map((fid) => [fid, []]));
+  const idx = () => db.transaction('videos').objectStore('videos').index('by_folder_sort');
+  for (const fid of want) {
+    await walkIndex(idx(), folderRange(scopeId, fid), {}, (c) => out.get(fid).push(c.value));
+  }
+  for (const park of ['~pending', '~rejected']) {
+    await walkIndex(idx(), folderRange(scopeId, park), {}, (c) => {
+      const home = c.value && c.value.homeFolderId;
+      if (want.has(home)) out.get(home).push(c.value);
+    });
+  }
+  return out;
+}
+
+/** v1.0.94 — every folder row on this device, whatever its scope (the orphan repair looks
+ *  for a lost folder's row under a scope the profile no longer reads). */
+export async function listAllCustomFolders() {
+  const db = await openDb();
+  return (await preq(db.transaction('customFolders').objectStore('customFolders').getAll())) || [];
 }
 
 export async function deleteLibraryChannel(libraryId, channelId, { tombstone = true, tombstoneAt } = {}) {

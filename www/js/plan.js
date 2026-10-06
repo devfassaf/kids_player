@@ -4,7 +4,7 @@
 // most important assertion in the suite is that running planMutations twice yields an
 // EMPTY second diff (sync never churns the DB or re-gifts on every launch).
 
-import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
+import { normalizeTitle, mergeVideoRecord, settleCuration, homeOf } from './normalize.js';
 import { sortKeyFor, compareForDisplay } from './order.js';
 import { MAX_ITEMS_PER_CHANNEL, MAX_ITEMS_TOTAL, SWIPE_MIN_PX, SWIPE_MAX_MS, SWIPE_RATIO,
   SWIPE_ARM_PX, SWIPE_COMMIT_RATIO, SWIPE_RUBBER, SWIPE_RUBBER_MAX,
@@ -1997,6 +1997,10 @@ export function manualVideoRecord({ row, scope, title = '', sortKey = 0, origin 
     folderId: 'sheet', channelId: null,   // 'sheet' is the ⭐ folder id, not a spreadsheet
     sortKey, publishedAt: null, rowIndex, origin, state: 'live',
     addedAt: now, approvedAt: now,
+    // v1.0.94 — a manual add IS a placement decision (the parent picked the folder), so it
+    // carries the stamp normalize.settlePlacement judges by: a video re-added here must not
+    // lose its folder to a stale copy of the same video on another device.
+    placedAt: now,
     thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
   };
 }
@@ -2548,17 +2552,21 @@ export function planDriveFolderImport({ files = [], existingKeys = null, denyKey
   // request). Collected here rather than re-derived by the caller, so "which files were
   // refused" keeps exactly one answer.
   const deniedKeys = [];
+  // v1.0.94 — and the media files ALREADY here, by key: a walk must be able to put a song
+  // back into its folder when the song survived and its folder did not (planDriveRefile).
+  // A count could only be reported.
+  const alreadyHere = [];
   const rows = [...(files || [])].filter((f) => f && typeof f.id === 'string' && f.id);
   rows.sort((a, b) => naturalCompare(a.name, b.name));
   for (const f of rows) {
     const media = kindOf(f);
     if (media !== 'audio' && media !== 'video') { skipped.nonMedia += 1; continue; }
     const key = 'file:drive:' + f.id;
-    if (have.has(key)) { skipped.existing += 1; continue; }
+    if (have.has(key)) { skipped.existing += 1; alreadyHere.push(key); continue; }
     if (denied.has(key)) { skipped.denied += 1; deniedKeys.push(key); continue; }
     add.push({ driveId: f.id, name: String(f.name || ''), media });
   }
-  return { add, skipped, deniedKeys };
+  return { add, skipped, deniedKeys, existingKeys: alreadyHere };
 }
 
 /**
@@ -2604,7 +2612,11 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
   denyKeys = null, mediaKindOf = null, rootId = null } = {}) {
   const byDriveId = new Map();
   for (const f of existingFolders || []) if (f && f.driveFolderId) byDriveId.set(f.driveFolderId, f);
-  const taken = (existingFolders || []).map((f) => (f && f.title) || '').filter(Boolean);
+  // v1.0.94 — a REBUILT placeholder's name is a guess that this very walk is about to
+  // replace (the walk upgrades the placeholder in place — pickPlaceholderToAdopt), so it must
+  // not push the real Drive name into "(2)" for ever. Measured on the family's data: the
+  // restored disc came back as "גילגולים (2)" beside the placeholder it replaced.
+  const taken = (existingFolders || []).filter((f) => f && !f.placeholder).map((f) => f.title || '').filter(Boolean);
   const kindOf = typeof mediaKindOf === 'function' ? mediaKindOf : () => null;
 
   const out = [];
@@ -2660,7 +2672,9 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
       // v1.0.61 — the Drive parent, which the caller maps to a `cf:` id. The walk has always
       // returned it; nothing ever persisted it, which is why the tree arrived FLAT.
       parentDriveId: isRoot ? null : (node.parentId || null),
-      existing, add: plan.add, skipped: plan.skipped
+      existing, add: plan.add, skipped: plan.skipped,
+      // v1.0.94 — the songs of this Drive folder that are ALREADY in the library
+      existingKeys: plan.existingKeys || []
     });
   }
   return { folders: out, added, skipped: totals, deniedKeys };
@@ -2673,10 +2687,21 @@ export function planDriveTreeImport({ folders = [], existingFolders = [], existi
  * the parent can fix (sharing).
  */
 export function driveFolderOutcome({ ok = true, added = 0, skipped = null, first = true,
-  folders = 0, truncated = false, partial = false } = {}) {
+  folders = 0, truncated = false, partial = false, restored = 0 } = {}) {
   const s = skipped || {};
   if (!ok) {
     return 'לא הצלחנו לקרוא את התיקיה מדרייב. ודאו שהיא משותפת "לכל מי שיש לו הקישור"';
+  }
+  // v1.0.94 — songs that were already in the library and are BACK IN THEIR FOLDER: the
+  // rebuilt placeholder they sat in became the real folder again (pickPlaceholderToAdopt),
+  // or they were moved back from a folder that was gone (planDriveRefile). That is the whole
+  // point of pasting the link again, and it used to read "אין קבצים חדשים בתיקיה" — true,
+  // and exactly backwards: the parent had just got their folders back.
+  if (restored > 0) {
+    const back = restored === 1 ? 'קובץ אחד חזר' : `${restored} קבצים חזרו`;
+    const extra = added > 0 ? ` · ${added === 1 ? 'נוסף קובץ חדש אחד' : `נוספו ${added} קבצים חדשים`}` : '';
+    const where = folders > 1 ? ` (${folders} תיקיות)` : '';
+    return `התיקיה שוחזרה! ${back} למקומם${where}${extra}`;
   }
   // v1.0.58 — a NESTED import says how it was laid out, because the parent pasted ONE link
   // and is about to find a folder holding several more (v1.0.61: they nest under it now
@@ -3055,6 +3080,213 @@ export function planEmptyFolderSweep({ folders = [], counts = null, now = Date.n
     out.push(f.folderId);
   }
   return out;
+}
+
+/* ---------------- lost folders (v1.0.94) ----------------
+   A video names its folder (`cf:<id>`); the folder's ROW carries its name, picture, Drive
+   link and place in the tree. Until v1.0.94 the rows never reached the Drive backup, so a
+   restore, a second device, or a device that lost its local data kept every song and lost
+   every folder — and the home builds folder tiles from rows alone, so the songs vanished
+   from the child's screen while the parent's library list still showed them under a bare
+   "תיקיה (15)" (field report, 2026-10-05). These decide how such a folder comes back. */
+
+const TRACK_NO = /^\s*\d{1,3}(?:\s*[.\-_)]\s*|\s+|(?=\D))/;
+const PART_WORDS = new Set(['חלק', 'part']);
+const PLACEHOLDER_FALLBACK = 'תיקיה משוחזרת';
+
+/**
+ * PURE (v1.0.94): a name for a folder rebuilt from its songs alone.
+ *
+ * The real name lived in the lost row; the songs are all that is left. A run of lectures
+ * ("מגילת קהלת חלק א…ו") names itself by the words every title shares — minus a dangling
+ * "חלק". Songs with nothing in common ("01 סוד המיתה", "02 פטירת האדם") are named by the
+ * FIRST track + "ועוד", which is honest and is what the parent will recognise. Leading track
+ * numbers are dropped ("01 ", "01-", "01פרשת"). Capped at FOLDER_TITLE_MAX on a WORD boundary
+ * — a tile title cut mid-word reads as a bug. The parent can rename it (✏️), and pasting the
+ * Drive link again restores the real one.
+ */
+export function placeholderFolderTitle(titles) {
+  const raw = (Array.isArray(titles) ? titles : []).map((t) => String(t ?? '').trim()).filter(Boolean);
+  if (!raw.length) return PLACEHOLDER_FALLBACK;
+  const ordered = raw.slice().sort(naturalCompare);
+  const strip = (t) => t.replace(TRACK_NO, '').replace(/\s+/g, ' ').trim();
+  const words = ordered.map((t) => strip(t).split(' ').filter(Boolean));
+  let common = words[0].slice();
+  for (const w of words.slice(1)) {
+    let i = 0;
+    while (i < common.length && i < w.length && common[i] === w[i]) i += 1;
+    common = common.slice(0, i);
+  }
+  while (common.length && PART_WORDS.has(common[common.length - 1].toLowerCase())) common.pop();
+  // Words that fit the budget — and never ending on a dangling "חלק": a cut that keeps
+  // "…ביתך חלק" and drops the letter after it names nothing.
+  const fit = (list, budget) => {
+    const out = [];
+    for (const w of list) {
+      if ([...[...out, w].join(' ')].length > budget) break;
+      out.push(w);
+    }
+    while (out.length > 1 && PART_WORDS.has(out[out.length - 1].toLowerCase())) out.pop();
+    return out.join(' ');
+  };
+  const joined = common.join(' ');
+  if (raw.length > 1 && (common.length >= 2 || [...joined].length >= 4)) {
+    return fit(common, FOLDER_TITLE_MAX) || PLACEHOLDER_FALLBACK;
+  }
+  const first = words[0];
+  if (raw.length === 1) return fit(first, FOLDER_TITLE_MAX) || PLACEHOLDER_FALLBACK;
+  const suffix = ' ועוד';
+  const head = fit(first, FOLDER_TITLE_MAX - [...suffix].length);
+  return head ? head + suffix : PLACEHOLDER_FALLBACK;
+}
+
+/**
+ * PURE (v1.0.94): videos filed under a `cf:` folder that has NO row — how does each such
+ * folder come back?
+ *
+ *  - TOMBSTONED (a parent deleted the folder, on some device whose "keep its videos" move
+ *    never travelled — every device before v1.0.94): its videos go to "סרטונים נוספים",
+ *    the delete dialog's own default answer, stamped so the move reaches every device.
+ *    Rebuilding the row would resurrect a folder the parent deleted.
+ *  - a row with the SAME id exists under ANOTHER scope on this device (a profile that once
+ *    read a different library — the v1.0.80 scope repair): ADOPT it, name, picture, Drive
+ *    link and all. The exact folder, not a guess.
+ *  - otherwise a PLACEHOLDER under the ORIGINAL id — so every video re-attaches at once, and
+ *    every device that rebuilds the same folder independently lands on the SAME row (the
+ *    merge collapses them; a real row from any device beats a placeholder — drive
+ *    .mergeCustomFolder). Named by placeholderFolderTitle, 🎵 for an all-audio folder, and
+ *    ordered by when its songs arrived. Flat: the tree the row knew is gone with it.
+ *
+ * A folder whose EVERY video sits in the rejected archive is left alone: nothing in it can
+ * be shown, a rebuilt row would sit in the parent's list for ever (the empty-folder sweep
+ * counts parked videos as occupants), and the repair runs again the moment one is restored.
+ *
+ * A placeholder is LOCAL to this device until it becomes real — drive.serializeDb never
+ * uploads one (see there): each device rebuilds its own under the same id, and the parent
+ * naming it or the Drive link restoring it is what makes it travel.
+ *
+ * Deterministic for the same inputs, and a library with no lost folder plans nothing.
+ * @param filed  Map<folderId, record[]> — ONLY folders with no row (db.recordsFiledUnder)
+ * -> { create: [row], adopt: [row], toSheet: [{ key, folderId: 'sheet', from }] } — the
+ *    moves are applied by db.placeVideos, which re-checks `from` against the record as it is
+ *    when written (normalize.placeInto decides the parking-aware fields there).
+ */
+export function planOrphanFolderRepair({ scopeId = null, filed = null, rows = [], tombs = {},
+  elsewhere = [], now = Date.now() } = {}) {
+  const out = { create: [], adopt: [], toSheet: [] };
+  const groups = filed instanceof Map ? filed : new Map(Object.entries(filed || {}));
+  if (!scopeId || !groups.size) return out;
+  const live = new Set((rows || []).filter(Boolean).map((r) => r.folderId));
+  const other = new Map();
+  for (const r of elsewhere || []) if (r && r.folderId && r.scopeId !== scopeId && !other.has(r.folderId)) other.set(r.folderId, r);
+  const tomb = tombs && typeof tombs === 'object' ? tombs : {};
+  const taken = (rows || []).filter(Boolean).map((r) => r.title || '').filter(Boolean);
+  for (const fid of [...groups.keys()].filter((f) => isCustomFolder(f) && !live.has(f)).sort()) {
+    const recs = (groups.get(fid) || []).filter((r) => r && r.key);
+    if (!recs.length) continue;
+    if (recs.every((r) => r.state === 'rejected' || r.folderId === '~rejected')) continue;
+    if (Object.prototype.hasOwnProperty.call(tomb, fid)) {
+      for (const r of recs) out.toSheet.push({ key: r.key, folderId: 'sheet', from: fid });
+      continue;
+    }
+    const found = other.get(fid);
+    if (found) {
+      out.adopt.push({ ...found, scopeId });
+      taken.push(found.title || '');
+      continue;
+    }
+    const born = Math.min(...recs.map((r) => Number(r.addedAt) || now));
+    const title = uniqueFolderTitle(placeholderFolderTitle(recs.map((r) => r.title)), taken);
+    taken.push(title);
+    out.create.push({
+      scopeId, folderId: fid, title,
+      emoji: recs.every((r) => r.media === 'audio') ? '🎵' : '📂',
+      artThumbId: null, artSrcUrl: null, driveFolderId: null, driveRootId: null, parentFolderId: null,
+      order: born, createdAt: born, placeholder: true
+    });
+  }
+  return out;
+}
+
+/**
+ * PURE (v1.0.94): a Drive walk found songs that are ALREADY in the library — may this one be
+ * moved into the folder being walked?
+ *
+ * Until now none did ("already here" was the end of the question), so pasting a Drive link
+ * again could never rebuild a lost folder: it minted fresh, EMPTY rows while the songs stayed
+ * filed under the folder that was gone. A song moves when its current folder is
+ *  - GONE (no row at all) — the walk now knows the real folder;
+ *  - the loose list ("סרטונים נוספים") — ONLY on a first import (the parent pasting the link
+ *    right now): a folder deleted with "keep its videos" put them there, and re-adding the
+ *    folder means "put them back". The 30-minute refresh never does this, or a song the
+ *    parent deliberately moved OUT of the folder would be yanked back twice an hour.
+ * A song in any other folder stays — a rebuilt PLACEHOLDER included: the walk does not
+ * empty a placeholder, it BECOMES it (pickPlaceholderToAdopt), and moving songs out of one
+ * would undo a grouping the parent may have made on purpose. The SAME predicate runs twice:
+ * here on the walk's snapshot, and again inside the write (db.placeVideos `accept`) on the
+ * record as it is then — so a song that moved meanwhile stays where it went.
+ */
+export function refileEligible(rec, { targetFolderId = null, rowsById = null, first = false } = {}) {
+  if (!rec || !targetFolderId) return false;
+  const home = homeOf(rec);
+  if (!home || home === targetFolderId) return false;
+  if (isCustomFolder(home)) {
+    const rows = rowsById instanceof Map ? rowsById : new Map(Object.entries(rowsById || {}));
+    return !rows.get(home);
+  }
+  return home === 'sheet' && !!first;
+}
+
+/** PURE (v1.0.94): the moves refileEligible allows for one walked folder, deduplicated.
+ *  @param rowsById  Map<folderId, row> of this library's folders, as they are NOW
+ *  -> [{ key, folderId }] — applied by db.placeVideos (normalize.placeInto decides the
+ *     parking-aware fields, against the record as it is when written). */
+export function planDriveRefile({ keys = [], targetFolderId = null, recordsByKey = null, rowsById = null,
+  first = false } = {}) {
+  const recs = recordsByKey instanceof Map ? recordsByKey : new Map(Object.entries(recordsByKey || {}));
+  const rows = rowsById instanceof Map ? rowsById : new Map(Object.entries(rowsById || {}));
+  if (!targetFolderId) return [];
+  const out = [];
+  const seen = new Set();
+  for (const key of keys || []) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (refileEligible(recs.get(key), { targetFolderId, rowsById: rows, first })) out.push({ key, folderId: targetFolderId });
+  }
+  return out;
+}
+
+/**
+ * PURE (v1.0.94): a Drive folder the walk finds NO row for — should it BECOME one of the
+ * placeholders the orphan repair rebuilt? Yes: the one holding the most of its songs
+ * (ties → the smaller id, so two devices pick the same one).
+ *
+ * This is what makes pasting the link again a restoration rather than a re-import. The
+ * placeholder carries the folder's ORIGINAL id — the one every song already names — so it
+ * is upgraded IN PLACE (real Drive name, place in the tree, the Drive link): no song moves,
+ * nothing is emptied, nothing is swept, and no tombstone is written. Minting a fresh row
+ * instead (the first version) moved every song, swept the emptied placeholders with
+ * tombstones — and a device still holding the REAL row under that id, on an app that had not
+ * updated yet, lost it to the tombstone. Upgraded in place, the real row and the restored one
+ * are the SAME row, and last-writer-wins simply settles which name it carries.
+ * -> folderId | null
+ */
+export function pickPlaceholderToAdopt({ keys = [], recordsByKey = null, rowsById = null } = {}) {
+  const recs = recordsByKey instanceof Map ? recordsByKey : new Map(Object.entries(recordsByKey || {}));
+  const rows = rowsById instanceof Map ? rowsById : new Map(Object.entries(rowsById || {}));
+  const count = new Map();
+  for (const key of new Set(keys || [])) {
+    const home = homeOf(recs.get(key));
+    const row = home ? rows.get(home) : null;
+    if (!row || !row.placeholder) continue;
+    count.set(home, (count.get(home) || 0) + 1);
+  }
+  let best = null;
+  let most = 0;
+  for (const [fid, n] of count) {
+    if (n > most || (n === most && best !== null && fid < best)) { best = fid; most = n; }
+  }
+  return best;
 }
 
 /* ---------------- containment lock (v1.0.56) ----------------

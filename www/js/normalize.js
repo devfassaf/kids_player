@@ -127,6 +127,77 @@ export function mergeVideoRecord(a, b) {
 }
 
 /**
+ * v1.0.94 — PURE: the folder a record LIVES in. A parked record (pending / rejected) keeps
+ * its real folder in `homeFolderId` while `folderId` holds the parking slot, so "where is
+ * it" is a two-field answer and every placement rule must ask it the same way.
+ */
+export function homeOf(rec) {
+  if (!rec) return null;
+  return (isParkedFolder(rec.folderId) ? rec.homeFolderId : rec.folderId) || null;
+}
+
+/**
+ * v1.0.94 — PURE: two copies of one record disagree about WHICH FOLDER it lives in. The
+ * LATER DELIBERATE PLACEMENT wins, and the evidence is `placedAt`.
+ *
+ * WHY THIS EXISTS. `mergeVideoRecord` takes every field — the folder included — from the
+ * copy it calls the survivor: the one with a downloaded file, else the OLDER one, and a tie
+ * keeps the first argument (the LOCAL copy, on a pull). So a placement made on one device
+ * never reached another: a parent's move kept its addedAt and lost the tie everywhere else,
+ * and a folder deleted with "move its videos" sent its TOMBSTONE to the peers while their
+ * copies stayed filed under a folder that no longer existed — invisible on every screen.
+ * That was latent only because folder rows never travelled at all (the v1.0.94 root cause);
+ * fixing the rows without this would have turned every folder deletion into exactly the bug
+ * the family reported.
+ *
+ * Deliberately NARROW: when NEITHER copy was ever deliberately placed (no `placedAt` — every
+ * channel video, every record written before this release) the result is untouched, so the
+ * sync's own placements (ch:/pl:, the unify rule) keep their old, tested convergence.
+ * ⚠️ A copy WITHOUT the stamp competes as ZERO — it was never deliberately placed, so it can
+ * never beat one that was, whatever its age. (The first version let it compete with its
+ * `addedAt`, "created later = placed later" — and the review found the hole: a channel sync
+ * on another device importing the same video LATER beat the parent's own move and pulled it
+ * out of their folder on every device.) The winning stamp is kept on the result, because
+ * the next merge has nothing else to judge by. An exact tie keeps the survivor's folder —
+ * the old behaviour. Parking is preserved: a parked result moves only its `homeFolderId`.
+ * Mutates and returns `out`.
+ */
+export function settlePlacement(a, b, out) {
+  if (!a || !b || !out) return out;
+  const pa = Number(a.placedAt) || 0;
+  const pb = Number(b.placedAt) || 0;
+  if (!pa && !pb) return out;
+  out.placedAt = Math.max(pa, pb);
+  const ha = homeOf(a);
+  const hb = homeOf(b);
+  if (!ha || !hb || ha === hb || pa === pb) return out;
+  return Object.assign(out, placeInto(out, pb > pa ? hb : ha, out.placedAt));
+}
+
+/**
+ * v1.0.94 — PURE: the fields that put `rec` into folder `folderId`, stamped `placedAt: at`.
+ * THE one statement of the parking rule for a move: a parked record (pending / rejected)
+ * keeps its parking slot and changes only its `homeFolderId` — moving `folderId` would show
+ * the child a video nobody approved, or bring back one the parent rejected — while a live
+ * record moves its `folderId`, and its `homeFolderId` too when it carries one (an approved
+ * record remembers where it was parked for). Every placement in the app goes through here:
+ * a parent's move, deleting a folder and keeping its videos, the orphan repair, the Drive
+ * re-file, and the cross-device merge above — four hand-written copies of this rule were
+ * one drift away from parking a video in the child's view.
+ */
+export function placeInto(rec, folderId, at) {
+  if (rec && isParkedFolder(rec.folderId)) return { homeFolderId: folderId, placedAt: at };
+  return { folderId, ...(rec && rec.homeFolderId ? { homeFolderId: folderId } : {}), placedAt: at };
+}
+
+/** v1.0.94 — two copies of one record, as the Drive document and a pull merge them: the
+ *  record merge, then the placement rule above. ONE function for both, so the document a
+ *  device writes and the library it applies can never disagree about a folder. */
+export function mergeVideoCopies(a, b) {
+  return settlePlacement(a, b, mergeVideoRecord(a, b));
+}
+
+/**
  * v1.0.22 — make a merged record's curation SELF-CONSISTENT. Two shapes are illegal and
  * BOTH were reachable, because `mergeVideoRecord` above flips `state` (a live loser
  * promotes a pending survivor) and never touches `folderId`:

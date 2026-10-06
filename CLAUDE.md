@@ -187,6 +187,49 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 - `planMutations` twice over identical inputs ⇒ empty diff (the churn-free test is sacred).
 - Gift state lives in `profileVideoState`, NOT on video records (siblings share libraries);
   `unwrappedAt` is forever (min-merged everywhere).
+- **EVERY COLLECTION THE DOC MERGE KNOWS MUST BE CARRIED BY `drive.serializeDb`** (v1.0.94).
+  `pushDrive` runs EVERY local document through `serializeDb` before it merges or uploads, and
+  `serializeDb` is a WHITELIST: v1.0.56 taught `buildLocalDoc`, `mergeDbFiles` and
+  `applyRemoteDoc` about custom folders and never added them there, so for five weeks no folder
+  row and no folder tombstone reached Drive while every video did — and every device but the
+  creator had songs filed under folders that did not exist. `test/folder-sync.test.mjs` pins
+  the SHAPE (every key `mergeDbFiles` emits per library survives `serializeDb`), so the next
+  collection cannot be forgotten silently. Device-local fields are on its strip list
+  (`localPath`, `thumbId`, and since v1.0.94 `localUsedAt`; for folder rows the refresh
+  throttle `driveSyncedAt`, ONE list shared with the apply side — `PER_DEVICE_FOLDER_FIELDS`).
+  **A REBUILT PLACEHOLDER FOLDER NEVER LEAVES ITS DEVICE** (`drive.travellingFolderRows`): an app
+  before v1.0.94 puts every remote folder row over its own regardless of age, so a device still
+  holding the REAL row would have its name, tree and Drive link replaced by a guess.
+- **WHICH FOLDER A VIDEO LIVES IN IS LAST-DELIBERATE-PLACEMENT-WINS** (v1.0.94, `placedAt`,
+  pure `normalize.settlePlacement` via `mergeVideoCopies`, used by BOTH `mergeDbFiles` and
+  `applyRemoteDoc`). `mergeVideoRecord` takes the folder from its survivor (the copy with a
+  download, else the OLDER one; a tie keeps the local copy), so a move never reached another
+  device and a folder deleted with "keep its videos" sent its tombstone everywhere while the
+  peers' videos stayed filed under it. Every deliberate placement stamps `placedAt`: manual
+  adds (`manualVideoRecord`), shares, Drive imports and re-files, `moveVideoToFolder`,
+  `db.moveFolderVideos`, the orphan repair's move to "סרטונים נוספים". **Narrow on purpose**:
+  when NEITHER copy carries the stamp (every channel video) the merge is untouched, and a copy
+  WITHOUT the stamp competes as ZERO — it never beats one that has it, whatever its age (the
+  first version let it compete with `addedAt`, and a later channel import on another device
+  pulled a video out of the parent's own folder everywhere).
+  **EVERY MOVE GOES THROUGH `db.placeVideos`**, which computes the fields with the ONE parking
+  rule (`normalize.placeInto`: a parked record moves only `homeFolderId`) from the record AS IT
+  IS inside the write transaction, and re-checks the caller's precondition there (`accept`). A
+  move computed from a snapshot and written back whole reverts whatever landed in between — a
+  pull, an approval, a REJECTION — and, stamped `placedAt: now`, wins on every device.
+- **A FOLDER ROW IS CHANGED AS A PATCH ON THE LIVE ROW, AND HOUSEKEEPING IS NOT AN EDIT**
+  (v1.0.94, `db.updateCustomFolder`). `{ ...snapshot, field }` writes from before a
+  network-bound Drive walk reverted a rename made during it; and the refresh stamp
+  (`driveSyncedAt`) is written with `touch: false` — stamping `updatedAt` for it let a refresh
+  on one tablet beat a rename the parent had just made on another (last-writer-wins handed to
+  housekeeping). Only the brand-new row may be put whole in `importDriveFolder` (count-pinned).
+- **A PULL MAY NOT REVERT A NEWER ROW** (v1.0.94, `drive.newerRemoteRows`, all three apply
+  plans — subscriptions, websites, folders). `pullDrive` applies the RAW remote document and
+  the push is debounced by a minute, so a remote row is written only if it wins the
+  collection's own merge against the local copy. **A rebuilt placeholder folder never beats a
+  real one** (`mergeCustomFolder`), whatever the timestamps, and a real row applied over a
+  placeholder never inherits `placeholder: true` (`drive.customFolderForApply`, which also keeps
+  this device's own `driveSyncedAt`).
 - **AN UNREADABLE DRIVE DOC IS NEVER AN EMPTY ONE** (v1.0.22, `drive.interpretDriveDoc` /
   `interpretDriveList` / `decidePush` — same pattern as `interpretSheetResponse`, and the
   same reason). `readDbFile` used to answer `null` for a 401, a network drop, a 200 + HTML
@@ -272,6 +315,121 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   `platform → store/classify/csv/util → db → plan/sync2/drive → ui/* → app.js`. `nav.js` never
   imports views. `tour.js` imports NOTHING (pure data + pure functions), so it is safe
   anywhere in the order.
+
+> ⚠️ **VERSION NOTE (2026-10-06): 1.0.93 WAS NEVER CUT** — the fourth deliberate skip. The
+> links copy (labelled `v1.0.93`, PR #183) and the folder fix (`v1.0.94`) were merged back to
+> back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
+> label in the tree, so no comment in the source names a version that has not shipped.
+
+- v1.0.94 — **A FOLDER OF SONGS VANISHED FROM THE CHILD'S HOME, AND IT WAS NEVER IN THE
+  BACKUP** (field report 2026-10-05: "התיקיה נעלמה מהמסך הראשי ומהחיפוש, אבל במסך ההורים אני
+  רואה אותה" — no app update, another device on the same account). Full record:
+  [docs/V1094.md](docs/V1094.md).
+  - **WHAT THE PARENT SAW**: the library list (הוספה) still held every song, grouped under
+    bare **"תיקיה (15)"** sections — the title `groupLibraryByFolder` gives a `cf:` id with
+    NO ROW — while the home and search had nothing: `buildFolders` makes folder tiles from
+    rows alone. מקורות → "תיקיות" showed no count at all, i.e. ZERO rows.
+  - ⚠️ **ROOT CAUSE, PROVEN ON THE FAMILY'S OWN BACKUP (twice): `drive.serializeDb` NEVER
+    CARRIED `customFolders` OR `deletedCustomFolders`.** `pushDrive` serializes the local doc
+    BEFORE it merges or uploads, so since v1.0.56 not one folder row reached Drive while every
+    video did. The September and October backups both held **751 songs filed under 32 `cf:`
+    folders and 0 folder rows, 0 tombstones**. The rows lived only on the device that imported
+    the collection; any restore, any second device, or that device losing its local data
+    ended with the songs present and the folders gone. Nothing deleted them — they were never
+    anywhere else. ⚠️ **Two docs claimed the opposite** ("custom folders are serialized
+    wholesale"; "it travels in the Drive doc") — both corrected in place.
+  - **FIXING THE ROWS ALONE WOULD HAVE CREATED THE BUG IT FIXES**, which is why three changes
+    ship together: rows + tombstones travel (`serializeDb`); placement becomes
+    last-deliberate-placement-wins (`placedAt`, `normalize.settlePlacement`) — otherwise a folder
+    deleted with "keep its videos" would send its TOMBSTONE to the peers while their videos
+    stayed filed under it (the merge kept each device's own copy on a tie); and the three apply
+    plans stop letting a stale pull revert a newer row (`drive.newerRemoteRows`) — now that
+    rows travel, a rename reverted by a pull would have been the next report.
+  - **THE FAMILY'S DATA HEALS ON UPDATE** (`app.repairOrphanFolders`, pure
+    `plan.planOrphanFolderRepair`, a stage of the entry refresh AFTER the pull and the Drive
+    refresh and BEFORE the empty-folder sweep, all index-pinned). Songs filed under a `cf:`
+    folder with no row get it back **under the ORIGINAL id** — no song is rewritten, and two
+    devices rebuilding independently converge on ONE row: a row this device still holds under
+    another scope is ADOPTED; a TOMBSTONED folder is not resurrected — its songs go to
+    "סרטונים נוספים" (the delete dialog's default), stamped; otherwise a **placeholder** named
+    from its songs (`plan.placeholderFolderTitle`: the words every title shares minus a
+    dangling "חלק", else the first track + "ועוד", track numbers stripped, cut on a word
+    boundary), 🎵 when all-audio, flagged `placeholder: true`. **A real row from any device
+    beats a placeholder** (`mergeCustomFolder`), and **a placeholder never leaves the device**
+    (`travellingFolderRows`) — each device rebuilds its own under the same id. A folder whose
+    every video is in the rejected archive is NOT rebuilt (nothing in it can be shown, and the
+    sweep counts parked videos, so it would sit in the parent's list for ever); it comes back
+    the moment one is restored. It costs NOTHING when nothing changed: a clean scan is
+    remembered against `db.dataVersion()` (the buildFolders cache rule), and the scan itself is
+    key-only on the `cf:` slice of `by_folder_sort` (`db.customFolderUsage`) — the reporting
+    family has 14,000+ videos and this runs on every home entry.
+  - **PASTING THE DRIVE LINK AGAIN RESTORES THE FOLDERS IN PLACE.** A walk used to stop at
+    "already here", so a re-paste minted fresh EMPTY folders while every song stayed filed under
+    the lost one. Now a Drive folder the walk finds no row for BECOMES the rebuilt placeholder
+    holding most of its songs (`plan.pickPlaceholderToAdopt`, ties → the smaller id): the
+    placeholder carries the ORIGINAL id every song already names, so it is upgraded in place —
+    real Drive name, place in the tree, Drive link — and **not one song moves, nothing is
+    emptied, swept or tombstoned**. (The first version minted new rows, moved every song and
+    swept the emptied placeholders with tombstones — and a device still holding the REAL row
+    under that id on an un-updated app lost it to the tombstone.) Songs whose folder is GONE
+    (no row at all), and on a fresh paste the loose list, still move in (`plan.refileEligible`,
+    re-checked inside the write). The 30-minute refresh adopts too, so a tree whose ROOT row
+    survived heals with no re-paste at all. The outcome says so ("התיקיה שוחזרה! N קבצים חזרו
+    למקומם"), a placeholder's guessed name may not push the real Drive name into "(2)", and two
+    rows for one Drive folder are walked ONCE per refresh.
+  - Also fixed on the way, each pinned: `importDriveFolder`'s final root stamp spread a
+    snapshot from BEFORE the network-bound walk (a lost update, visible everywhere once rows
+    travel — it re-reads now); a folder picture now reaches the other devices
+    (`app.fetchFolderArt`, https-only, once per session — the apply-side comment had promised
+    this fetch and nothing implemented it); a search result for a collection said "0
+    סרטונים" (search entries now carry `children`); `localUsedAt` (the cache prune's clock)
+    travelled in every backup — 13 records in the family's — because its guard banned the WORD
+    from drive.js instead of checking the strip (vacuous; replaced).
+  - **THE PARENT IS TOLD**: a rebuilt folder's line in מקורות → תיקיות says its name was
+    guessed and that pasting the Drive link restores the real name and tree; renaming it makes
+    it the parent's (`placeholder: false`, and from then on it travels).
+  - ⚠️ **A FAMILY MIXING VERSIONS IS SAFE, NOT TIDY — UPDATE EVERY DEVICE.** A device still on
+    ≤1.0.93 serializes no folder rows: its BLIND write (`decidePush` 'unchanged-since-our-write')
+    drops every row and folder tombstone from the document until an updated device pushes them
+    back, and its merge of a placement drops `placedAt` (the Drive doc's copy of a moved song
+    flips between the two until it updates). Nothing local is lost on an updated device —
+    absence is never a deletion — and the two hazards that WOULD lose data are closed: no
+    placeholder ever reaches an old device (it would overwrite the real row), and the restore
+    writes no tombstones (an old device holding the real row under the same id would delete it).
+  - **THE REVIEW PASS IS PART OF THE RELEASE** (9 findings, all fixed and pinned): the re-file
+    wrote whole record SNAPSHOTS back after the network-bound walk (`db.placeVideos` now); the
+    per-node Drive stamps spread stale rows and bumped `updatedAt` (`db.updateCustomFolder`,
+    `touch:false`); an unstamped copy could beat a deliberate placement (competes as 0 now); a
+    placeholder could overwrite a real row on an un-updated device (local now) and the restore's
+    tombstones could delete one (in-place now); placeholders for all-rejected folders; the repair
+    re-scanning on every home entry; a second full library load per Drive walk; folder-picture
+    Blobs pinned in memory for the session; and the parking rule hand-written four times
+    (`normalize.placeInto`).
+  - 30 unit tests (`test/folder-sync.test.mjs`) + 4 wiring guards (two of them rewritten by the
+    review) + 4 reshaped ones (the entry refresh's render count 3→4, the vacuous `localUsedAt`
+    guard replaced, db.js's single import, the folder apply's row builder);
+    **every one proven red on a planted regression (37 before the review + 27 after)** — three
+    of my own guards were caught VACUOUS or mis-planted by the cycle (a `/placedAt/` match
+    satisfied by the `const` that names it; an order plant that added a call instead of moving
+    it; a ban on spreading `target|row|fresh` that stayed green with the root stamp spread from
+    `rootRow.existing` — now pinned by COUNT) and fixed.
+    **Verified end to end on the family's REAL backup** in the browser, through the real
+    `pullDrive` with a stubbed token: 3 profiles restored, 751 songs in 32 row-less folders
+    (the reported state exactly) → the entry refresh rebuilt all 32 on the child's home,
+    searchable, with named library sections and the parent's note → a REAL push uploaded the
+    rows and no device-local stamps. The family's data was removed from the dev environment
+    after. **The reviewed design was re-verified on a synthetic library of the same shape**
+    (nothing sent to Google — every request answered inside the page): the repair rebuilt three
+    placeholders, skipped an all-rejected folder, sent a tombstoned folder's songs to the loose
+    list stamped, and still repaired an orphan written mid-session (the dataVersion gate's
+    negative case); push #1 uploaded ZERO placeholder rows; re-pasting a served Drive tree
+    through the real PIN gate and add form answered "התיקיה שוחזרה! 11 קבצים חזרו למקומם (3
+    תיקיות) · נוסף קובץ חדש אחד" and upgraded the three placeholders IN PLACE (same ids, Drive
+    names, nested under the collection, no song moved but the loose one, no tombstone, the
+    refresh stamp not counted as an edit); push #2 carried the four real rows without
+    `driveSyncedAt`; a pull took a newer rename and kept the local stamp, and replaced a local
+    placeholder with an OLDER real row; the 📁 move, a parked move, a refused precondition and
+    deleting a folder while keeping its videos all behaved, with no console error.
 
 - v1.0.93 — **THE LINKS LIST CAN BE COPIED AS TEXT, AND IT CAN COVER SEVERAL PROFILES**
   (field report: "כפתור שליחה כטקסט לא מגיב ולא מופיע שום דבר … צריך שהכפתור יעתיק … וגם לבחור
@@ -1587,7 +1745,9 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
   - **`parentFolderId` ON THE `customFolders` ROW IS THE WHOLE DATA MODEL** — a `cf:` id, or
     null for a root. **No `DB_VERSION` bump** (the store is schemaless per row and a row
     without the field reads as a root), and it travels for free: custom folders are
-    serialized wholesale and merged LWW by `updatedAt`. **The walk has always returned
+    serialized wholesale and merged LWW by `updatedAt`. ⚠️ **v1.0.94: THAT SENTENCE WAS
+    FALSE until v1.0.94** — `drive.serializeDb` never carried `customFolders`, so no folder
+    row ever reached Drive (see the v1.0.94 entry). **The walk has always returned
     `parentId`; nothing ever persisted it**, which is the entire reason the tree arrived flat.
   - **A FOLDER THAT HOLDS ONLY FOLDERS NOW GETS A ROW.** v1.0.58 dropped it ("a folder of
     folders is not a folder here") and was right to: flattened, such a row could never be
@@ -2261,6 +2421,8 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     database: it opens at v3 with 11 stores and no `ConstraintError`.
   - The links file deliberately does NOT carry folder assignment (no second grammar, no
     second parser — the v1.0.38 promise); it travels in the Drive doc and the snapshot.
+    ⚠️ **v1.0.94: the Drive-doc half was FALSE until v1.0.94** — the videos travelled, each
+    naming its `cf:` folder, and the folder rows never did (`serializeDb` dropped them).
   - **CENTERING: `#view-folderpick` is the third user of the `.wn-wrap` skeleton and hit the
     exact bug its comment warns about** — measured pinned to the RTL right edge, fixed, and
     re-measured centered (353px both sides).
@@ -3705,7 +3867,7 @@ pins that the consumers follow the config and that every address is well-formed.
     `applyRemoteDoc` adopts a peer's tombstones AND purges anything an earlier pull already
     restored. Grow-only is safe here where the video deny-list needed revocation: a profile
     id is minted randomly and never reused, so "the sheet re-added it" cannot arise.
-- **Release records: [docs/V1045.md](docs/V1045.md), [docs/V1038.md](docs/V1038.md), [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
+- **Release records: [docs/V1094.md](docs/V1094.md), [docs/V1045.md](docs/V1045.md), [docs/V1038.md](docs/V1038.md), [docs/V1033.md](docs/V1033.md), [docs/V1032.md](docs/V1032.md),
   [docs/V1026.md](docs/V1026.md), [docs/V1025.md](docs/V1025.md)** — what changed in each
   and why, including which features ALREADY EXISTED and were broken. The per-feature
   invariants stay below; those files are the map.

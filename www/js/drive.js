@@ -16,7 +16,7 @@ import { httpRequest } from './platform.js';
 import { getAccessToken, invalidateToken } from './gauth.js';
 import { libraryIdFor } from './util.js';
 import { looksLikeHtml } from './csv.js'; // a 200 + sign-in page is a FAILURE, never an empty doc
-import { normalizeTitle, mergeVideoRecord, settleCuration } from './normalize.js';
+import { normalizeTitle, mergeVideoCopies, settleCuration } from './normalize.js';
 // v1.0.40: the favourite half of a state entry is merged by the same pure rule everywhere
 // (plan.js is the same import layer as this module — see the order in CLAUDE.md — and it
 // does not import drive.js, so this edge adds no cycle).
@@ -269,12 +269,50 @@ export function mergeChannelForApply(prev, remote) {
   return { ...prev, ...shared, ...keep };
 }
 
+/**
+ * v1.0.94 — what of a parent-made FOLDER ROW is this device's own and never travels: the
+ * Drive refresh's throttle stamp. A peer's stamp would silence this device's refresh, and
+ * stamping it is housekeeping, not an edit (db.updateCustomFolder `touch:false`). ONE list
+ * for both halves — the serializer strips it, the apply keeps the local value — so the two
+ * cannot drift (the PER_DEVICE_CHANNEL_FIELDS lesson: one half once forgot a field).
+ */
+const PER_DEVICE_FOLDER_FIELDS = ['driveSyncedAt'];
+
+/** PURE: a folder row without its per-device fields. */
+export function stripPerDeviceFolder(row) {
+  const out = { ...(row || {}) };
+  for (const f of PER_DEVICE_FOLDER_FIELDS) delete out[f];
+  return out;
+}
+
+/** PURE (v1.0.94): which folder rows a document may carry. A rebuilt PLACEHOLDER stays on the
+ *  device that rebuilt it: its name is a guess, and an app before v1.0.94 applies a remote row
+ *  over its own regardless of age — a device still holding the REAL folder would have it
+ *  overwritten by the guess (name, place in the tree and Drive link all gone). Every device
+ *  rebuilds its own under the same id; the parent naming it, or the Drive link restoring it,
+ *  makes it real, and from then on it travels like any other row. */
+export function travellingFolderRows(rows) {
+  return (rows || []).filter((r) => r && !r.placeholder).map(stripPerDeviceFolder);
+}
+
+/** PURE (v1.0.94): the row to write when applying a remote folder — the peer's shared facts
+ *  and THIS device's own throttle stamp. Never `{...prev, ...remote}`: a real row replacing a
+ *  local placeholder must not inherit `placeholder: true` from it. */
+export function customFolderForApply(prev, remote) {
+  const out = stripPerDeviceFolder(remote);
+  for (const f of PER_DEVICE_FOLDER_FIELDS) if (prev && prev[f] !== undefined) out[f] = prev[f];
+  return out;
+}
+
 export function serializeDb({ profiles, libraries, profileState, profileSources, settings, deletedProfiles }) {
   const clean = {};
   for (const [libId, lib] of Object.entries(libraries || {})) {
     clean[libId] = {
       sheetUrl: lib.sheetUrl || null,
-      videos: (lib.videos || []).map(({ localPath, thumbId, ...v }) => v),
+      // v1.0.94 — `localUsedAt` joins the strip list: it is when THIS device last played its
+      // cached copy (the cache prune's clock) and means nothing anywhere else. It travelled,
+      // because the old guard banned the WORD from drive.js instead of checking the strip.
+      videos: (lib.videos || []).map(({ localPath, thumbId, localUsedAt, ...v }) => v),
       denylist: lib.denylist || [],
       // ONE list, shared with the apply side (mergeChannelForApply), so the two halves of
       // "paging state never travels" cannot drift. They did: this used to omit
@@ -289,7 +327,19 @@ export function serializeDb({ profiles, libraries, profileState, profileSources,
       // PROFILE scopes, so the thinner `prof:` branch of buildLocalDoc must carry them
       // too — that branch is the only place they ever appear for most families.
       siteEntries: lib.siteEntries || [],
-      deletedSiteEntries: lib.deletedSiteEntries || {}
+      deletedSiteEntries: lib.deletedSiteEntries || {},
+      // ⚠️ v1.0.94 — THE ROOT CAUSE OF "THE FOLDER VANISHED". v1.0.56 taught buildLocalDoc,
+      // mergeDbFiles and applyRemoteDoc about parent-made folders and never added them HERE,
+      // and pushDrive runs every local document through this function before it merges or
+      // uploads. So no folder row and no folder tombstone ever reached Drive: the videos
+      // travelled (each one still naming its `cf:` folder) and the folders stayed on the one
+      // device that made them. A restore, a second device, or that device losing its local
+      // data all ended the same way — the songs present, the folder gone, nothing on the
+      // child's home (field report; the family's backup held 751 songs in 32 folders and
+      // ZERO folder rows, in September and again in October).
+      // Rebuilt placeholders and the per-device refresh stamp stay home (travellingFolderRows).
+      customFolders: travellingFolderRows(lib.customFolders),
+      deletedCustomFolders: lib.deletedCustomFolders || {}
     };
   }
   return JSON.stringify({
@@ -382,12 +432,33 @@ export function channelOutlivesTombstone(row, at) {
  * resurrection — pullDrive applies the raw remote doc, unmerged), and delete the
  * local rows that lose (the device that never heard about the deletion).
  */
+/**
+ * v1.0.94 — PURE: which REMOTE rows a pull may write: the ones that survive the tombstones
+ * AND win the collection's own merge against the local copy.
+ *
+ * All three apply plans (subscriptions, websites, folders) used to put EVERY surviving
+ * remote row, and `pullDrive` applies the RAW remote document — so a document older than
+ * this device's last edit (the push is debounced by a minute; a pull runs on every resume)
+ * silently reverted that edit, and the next push then uploaded the reverted row. The merge
+ * functions already know which copy is newer; the plan simply never asked them. A row
+ * this device does not have is always taken.
+ */
+export function newerRemoteRows(localRows, remoteRows, keyOf, merge, survives) {
+  const local = new Map();
+  for (const r of localRows || []) if (r && keyOf(r)) local.set(keyOf(r), r);
+  return (remoteRows || []).filter((r) => {
+    if (!r || !keyOf(r) || !survives(r)) return false;
+    const mine = local.get(keyOf(r));
+    return !mine || merge(mine, r) === r;
+  });
+}
+
 export function planChannelApply({ localRows, remoteRows, localTombs, remoteTombs }) {
   const tombs = mergeDeletedChannels(localTombs, remoteTombs);
   const survives = (lc) => !(lc.channelId in tombs) || channelOutlivesTombstone(lc, tombs[lc.channelId]);
   return {
     tombs,
-    puts: (remoteRows || []).filter((lc) => lc && lc.channelId && survives(lc)),
+    puts: newerRemoteRows(localRows, remoteRows, (lc) => lc.channelId, mergeLibraryChannel, survives),
     deletes: (localRows || []).filter((lc) => lc && lc.channelId && !survives(lc)).map((lc) => lc.channelId)
   };
 }
@@ -444,7 +515,7 @@ export function planSiteApply({ localRows, remoteRows, localTombs, remoteTombs }
   const survives = (e) => !(e.entryId in tombs) || siteEntryOutlivesTombstone(e, tombs[e.entryId]);
   return {
     tombs,
-    puts: (remoteRows || []).filter((e) => e && e.entryId && survives(e)),
+    puts: newerRemoteRows(localRows, remoteRows, (e) => e.entryId, mergeSiteEntry, survives),
     deletes: (localRows || []).filter((e) => e && e.entryId && !survives(e)).map((e) => e.entryId)
   };
 }
@@ -462,6 +533,12 @@ export function planSiteApply({ localRows, remoteRows, localTombs, remoteTombs }
 export function mergeCustomFolder(a, b) {
   if (!a) return b;
   if (!b) return a;
+  // v1.0.94 — A REBUILT PLACEHOLDER NEVER BEATS A REAL ROW, whatever the timestamps say. The
+  // orphan repair (plan.planOrphanFolderRepair) recreates a lost folder under its ORIGINAL
+  // id with a name guessed from its songs; the moment any device still holding the real
+  // row (its Drive name, its place in the tree) pushes it, that row must win everywhere —
+  // and a placeholder is stamped NOW, so plain LWW would let the guess beat the truth.
+  if (!!a.placeholder !== !!b.placeholder) return a.placeholder ? b : a;
   const ta = a.updatedAt || 0;
   const tb = b.updatedAt || 0;
   if (ta !== tb) return tb > ta ? b : a;
@@ -492,7 +569,7 @@ export function planCustomFolderApply({ localRows, remoteRows, localTombs, remot
   const survives = (e) => !(e.folderId in tombs) || customFolderOutlivesTombstone(e, tombs[e.folderId]);
   return {
     tombs,
-    puts: (remoteRows || []).filter((e) => e && e.folderId && survives(e)),
+    puts: newerRemoteRows(localRows, remoteRows, (e) => e.folderId, mergeCustomFolder, survives),
     deletes: (localRows || []).filter((e) => e && e.folderId && !survives(e)).map((e) => e.folderId)
   };
 }
@@ -522,7 +599,10 @@ export function mergeDbFiles(a, b) {
 
     const vids = new Map();
     for (const v of la.videos || []) vids.set(v.key, v);
-    for (const v of lb.videos || []) vids.set(v.key, vids.has(v.key) ? mergeVideoRecord(vids.get(v.key), v) : v);
+    // v1.0.94 — mergeVideoCopies: the LATER deliberate placement decides the folder (see
+    // normalize.settlePlacement). The same function the pull uses, so the document and the
+    // library cannot disagree about where a video lives.
+    for (const v of lb.videos || []) vids.set(v.key, vids.has(v.key) ? mergeVideoCopies(vids.get(v.key), v) : v);
 
     // deny-list: LWW-element union (v1.0.10) — entries never vanish, but a revoked
     // entry (sheet re-add) is inert. Only ACTIVE winners drop videos.
@@ -780,7 +860,11 @@ async function applyRemoteDoc(doc) {
     for (const v of lib.videos || []) {
       if (!v || !v.key || activeDenied.has(v.key)) continue;
       const mine = existing.get(v.key);
-      const rec = mine ? mergeVideoRecord(mine, { ...v, scopeId: libId }) : { ...v, scopeId: libId, localPath: null, thumbId: null };
+      const rec = mine ? mergeVideoCopies(mine, { ...v, scopeId: libId }) : { ...v, scopeId: libId, localPath: null, thumbId: null };
+      // v1.0.94 — the cache prune's clock is THIS device's: a document written before the
+      // strip above still carries a peer's stamp, and adopting it would make a file this
+      // device never played look freshly used (or one it plays daily look stale).
+      rec.localUsedAt = (mine && mine.localUsedAt) || null;
       rec.normTitle = normalizeTitle(rec.title);
       // v1.0.22 — THIS is where a peer's approval lands, and it must land REACHABLE.
       // mergeVideoRecord promotes a locally-pending record when the remote one is live
@@ -846,8 +930,10 @@ async function applyRemoteDoc(doc) {
       await putSiteEntry({ ...e, scopeId: libId }, { preserveTimestamp: true });
     }
     // v1.0.56 — parent-created folders, identical shape and order.
+    const cfLocal = await listCustomFolders(libId);
+    const cfMine = new Map(cfLocal.map((r) => [r.folderId, r]));
     const cfPlan = planCustomFolderApply({
-      localRows: await listCustomFolders(libId),
+      localRows: cfLocal,
       remoteRows: lib.customFolders || [],
       localTombs: await getDeletedCustomFolders(libId),
       remoteTombs: lib.deletedCustomFolders
@@ -859,8 +945,10 @@ async function applyRemoteDoc(doc) {
     for (const e of cfPlan.puts) {
       // `artThumbId` names a blob in the LOCAL thumbs store, which never travels — so a
       // folder arriving from a peer renders its emoji until this device fetches the
-      // picture itself from `artSrcUrl` (best-effort, on the next render).
-      await putCustomFolder({ ...e, scopeId: libId }, { preserveTimestamp: true });
+      // picture itself from `artSrcUrl` (best-effort, on the next render — app.fetchFolderArt,
+      // v1.0.94; until then this comment described code that did not exist).
+      await putCustomFolder({ ...customFolderForApply(cfMine.get(e.folderId), e), scopeId: libId },
+        { preserveTimestamp: true });
     }
   }
   // Rebuild sources for restored profiles (v1.0.4): a fresh device knows the library data

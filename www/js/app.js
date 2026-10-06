@@ -53,7 +53,7 @@ import * as loading from './ui/loading.js';
 import * as nav from './nav.js';
 import * as db from './db.js';
 import { syncLibrary, shouldSync } from './sync2.js';
-import { normalizeTitle } from './normalize.js';
+import { normalizeTitle, homeOf } from './normalize.js';
 import { burst } from './ui/confetti.js';
 import { playUnwrap } from './ui/sound.js';
 import { initShareTarget, drainShareQueue } from './share.js';
@@ -1180,6 +1180,15 @@ async function entryRefresh(id, { pull = true, forceSync = false } = {}) {
     await renderAfterRemoteChange();
   }
   if (activeProfileId !== id) return;
+  // v1.0.94 — A FOLDER WHOSE ROW IS GONE COMES BACK, before anything judges folders. AFTER the
+  // pull (a peer's real row may be arriving right now — a guess must not race it) and after
+  // the Drive refresh (which puts songs back into REAL Drive rows where it can); BEFORE the
+  // empty-folder sweep, which must see the rebuilt rows full rather than miss them entirely.
+  if (await repairOrphanFolders(await currentLibScope())) {
+    if (activeProfileId !== id) return;
+    await renderAfterRemoteChange();
+  }
+  if (activeProfileId !== id) return;
   // v1.0.58 — housekeeping, AFTER the pull and the Drive refresh and never before them: both
   // of those ADD content, and a sweep that ran first would judge a folder empty a second
   // before its videos arrived, or delete a file a peer's record was about to claim. Both are
@@ -1236,6 +1245,64 @@ async function applyDeleteLocalCopies(records, choice) {
     const { deleteLocalFiles } = await import('./media.js');
     return await deleteLocalFiles(records);
   } catch { return { deleted: 0, bytes: 0 }; }
+}
+
+/**
+ * v1.0.94 — SONGS WHOSE FOLDER ROW IS GONE GET THEIR FOLDER BACK (field report 2026-10-05:
+ * "התיקיה נעלמה מהמסך הראשי ומהחיפוש, אבל במסך ההורים אני רואה את השירים").
+ *
+ * The home builds folder tiles from ROWS, and until this release no row ever reached the
+ * Drive backup (drive.serializeDb never carried them). So every device but the one that
+ * made a folder — and that device too, the moment its local data was lost and restored —
+ * held the songs, each still naming its `cf:` folder, and no folder: nothing on the child's
+ * home, nothing in search, and a bare "תיקיה (15)" in the parent's library list. The
+ * family's backup showed exactly that in September and again in October: 751 songs in 32
+ * folders, zero rows.
+ *
+ * The decision is pure (`plan.planOrphanFolderRepair`): adopt the row if this device still
+ * has it under another scope, send the songs of a DELETED folder to "סרטונים נוספים", and
+ * otherwise rebuild the folder under its ORIGINAL id as a placeholder named after its songs
+ * — so the songs re-attach at once, two devices rebuilding it converge on one row, and a
+ * real row from any device replaces the guess. Silent, best-effort, and it never deletes
+ * anything.
+ *
+ * It runs on every home entry, so it must cost NOTHING when nothing changed: a scan that
+ * found nothing to repair is remembered against `db.dataVersion()` (the buildFolders cache
+ * rule — the counter moves on every committed write, a pull's included), and until some
+ * write happens the next entry does not even read the index. The scan itself is key-only
+ * for live videos; only the parked slots are read by value.
+ * -> how many rows/records it changed
+ */
+let orphanScanClean = null; // { scope, seq } — the last scan that left nothing to repair
+async function repairOrphanFolders(scope) {
+  if (!scope) return 0;
+  const seq = db.dataVersion();
+  if (orphanScanClean && orphanScanClean.scope === scope && orphanScanClean.seq === seq) return 0;
+  try {
+    const usage = await db.customFolderUsage(scope);
+    const rows = usage.size ? await db.listCustomFolders(scope) : [];
+    const have = new Set(rows.map((r) => r.folderId));
+    const lost = [...usage.keys()].filter((fid) => !have.has(fid));
+    if (!lost.length) { orphanScanClean = { scope, seq }; return 0; }
+    const { planOrphanFolderRepair } = await import('./plan.js');
+    const plan = planOrphanFolderRepair({
+      scopeId: scope,
+      filed: await db.recordsFiledUnder(scope, new Set(lost)),
+      rows,
+      tombs: await db.getDeletedCustomFolders(scope),
+      elsewhere: (await db.listAllCustomFolders()).filter((r) => r && r.scopeId !== scope && lost.includes(r.folderId)),
+      now: Date.now()
+    });
+    for (const row of [...plan.adopt, ...plan.create]) await db.putCustomFolder(row);
+    // re-checked inside the write: a video that left the deleted folder meanwhile stays put
+    const moved = await db.placeVideos(scope, plan.toSheet, { accept: (cur, m) => homeOf(cur) === m.from });
+    const changed = plan.adopt.length + plan.create.length + moved.length;
+    if (changed) maybeSchedulePush();
+    // nothing written (e.g. every lost folder holds only rejected videos): remember that, or
+    // every home entry would re-read the parked slots to reach the same answer
+    else orphanScanClean = { scope, seq };
+    return changed;
+  } catch { return 0; } // housekeeping must never take the entry refresh down with it
 }
 
 /**
@@ -2056,6 +2123,34 @@ function mountChannelLogo(host, url, channelId, emoji) {
 }
 
 /**
+ * v1.0.94 — a folder picture this device has NO BYTES for is fetched once from the URL the
+ * parent picked it from, and cached under the SAME deterministic id (`cfart:<folderId>`).
+ * Until now a folder's row never left the device that made it, so its picture never had
+ * to; now rows travel, and without this every other device would wear the emoji for ever
+ * (the apply-side comment in drive.js promised exactly this fetch — nothing implemented it).
+ * One attempt per picture per session: a dead URL must not cost a request on every render.
+ * Only the in-flight promise and a FAILURE are remembered — a fetched picture lives in the
+ * thumbs store, and keeping its Blob here as well would pin every folder picture in memory
+ * until the app is killed.
+ */
+const folderArtFetches = new Map(); // thumbId -> Promise<Blob|null>, in flight or failed
+function fetchFolderArt(thumbId, srcUrl) {
+  if (!folderArtFetches.has(thumbId)) {
+    folderArtFetches.set(thumbId, (async () => {
+      try {
+        const { httpGetBlob } = await import('./platform.js');
+        const blob = await httpGetBlob(srcUrl);
+        if (!blob || !blob.size) return null;
+        await db.putThumb(thumbId, blob, { origin: 'folder-art', srcUrl });
+        folderArtFetches.delete(thumbId);
+        return blob;
+      } catch { return null; }
+    })());
+  }
+  return folderArtFetches.get(thumbId);
+}
+
+/**
  * v1.0.40 — mount a BUNDLED folder illustration, with the emoji as its fallback.
  *
  * `onerror` matters even for a file that ships in the APK: a stale WebView cache or a
@@ -2069,11 +2164,14 @@ function mountChannelLogo(host, url, channelId, emoji) {
  * where a stored URL was exactly what failed. The emoji shows until the bytes paint, and
  * stays if they never do (an evicted or missing blob must degrade, never blank).
  */
-function mountCustomArt(host, thumbId, emoji) {
+function mountCustomArt(host, thumbId, emoji, srcUrl = null) {
   host.textContent = emoji || '📁';
   if (!thumbId) return;
   host.dataset.artId = thumbId; // a slow read must not paint into a tile that moved on
-  db.getThumbBlob(thumbId).then((blob) => {
+  db.getThumbBlob(thumbId).then(async (stored) => {
+    let blob = stored;
+    // https only: these bytes land on a child's screen (the folderart.artUrlCandidate rule)
+    if (!blob && srcUrl && /^https:/i.test(String(srcUrl))) blob = await fetchFolderArt(thumbId, srcUrl);
     if (!blob || host.dataset.artId !== thumbId) return;
     const img = document.createElement('img');
     img.className = 'folder-art';
@@ -2639,7 +2737,7 @@ function folderTile(f) {
   logo.className = 'folder-logo';
   // v1.0.32: a channelId alone is enough — cached bytes may exist even when the URL
   // is gone (rebrand) or was never fetched on this device.
-  if (f.custom) mountCustomArt(logo, f.artThumbId, f.emoji);
+  if (f.custom) mountCustomArt(logo, f.artThumbId, f.emoji, f.artSrcUrl);
   else if (f.art) mountFolderArt(logo, f.art, f.emoji);
   else if (f.logoUrl || f.channelId) mountChannelLogo(logo, f.logoUrl, f.channelId, f.emoji);
   else logo.textContent = f.emoji;
@@ -2803,7 +2901,7 @@ async function buildFolders() {
         children, parentFolderId: cf.parentFolderId || null,
         // the parent-picked picture rides the thumbs byte cache like a channel logo
         // (v1.0.32), so it renders offline and survives a dead source URL
-        artThumbId: cf.artThumbId || null
+        artThumbId: cf.artThumbId || null, artSrcUrl: cf.artSrcUrl || null
       });
     }
   }
@@ -3243,7 +3341,10 @@ async function buildSearchIndex() {
         logoUrl: f.logoUrl || '', emoji: f.emoji || (isGroup ? '🎞️' : '📺'),
         count: f.count || 0,
         // the search result renders through the same tile path as the home
-        custom: !!f.custom, artThumbId: f.artThumbId || null
+        custom: !!f.custom, artThumbId: f.artThumbId || null, artSrcUrl: f.artSrcUrl || null,
+        // v1.0.94 — a folder that holds FOLDERS says so in a search result too: without it the
+        // restored collection read "0 סרטונים" there while its home tile read "2 תיקיות"
+        children: f.children || 0
       });
     }
   }
@@ -3298,7 +3399,10 @@ async function buildFolderSearchIndex(fid) {
         key: 'folder:' + id.slice(id.indexOf(':') + 1),
         title: f.title, normTitle: normalizeTitle(f.title),
         logoUrl: f.logoUrl || '', emoji: f.emoji || '📁', count: f.count || 0,
-        custom: !!f.custom, artThumbId: f.artThumbId || null
+        custom: !!f.custom, artThumbId: f.artThumbId || null, artSrcUrl: f.artSrcUrl || null,
+        // v1.0.94 — a folder that holds FOLDERS says so in a search result too: without it the
+        // restored collection read "0 סרטונים" there while its home tile read "2 תיקיות"
+        children: f.children || 0
       });
     }
   }
@@ -3458,7 +3562,7 @@ function paintFolderHeader(fid) {
   const logoTop = $('folder-logo-top');
   logoTop.innerHTML = '';
   if (f && f.custom) { // v1.0.56 — the parent's own picture, from the byte cache
-    mountCustomArt(logoTop, f.artThumbId, f.emoji || '📁');
+    mountCustomArt(logoTop, f.artThumbId, f.emoji || '📁', f.artSrcUrl);
     logoTop.classList.remove('hidden');
   } else if (f && f.art) { // v1.0.40 — the ⭐ folder's drawn scene, same art as its tile
     mountFolderArt(logoTop, f.art, f.emoji || '🎬');
@@ -5750,7 +5854,7 @@ async function customFolderRow(cf, depth = 0, children = 0) {
   if (depth) li.style.paddingInlineStart = Math.min(depth, 3) * 18 + 'px';
   const ico = document.createElement('span');
   ico.className = 'fp-ico';
-  mountCustomArt(ico, cf.artThumbId, cf.emoji || '📁');
+  mountCustomArt(ico, cf.artThumbId, cf.emoji || '📁', cf.artSrcUrl);
   const body = document.createElement('div');
   body.className = 'li-body';
   const title = document.createElement('div');
@@ -5767,6 +5871,11 @@ async function customFolderRow(cf, depth = 0, children = 0) {
     : kids ? kids
     : count ? `${count} סרטונים`
     : 'ריקה — לא מוצגת לילד עד שיהיה בה תוכן';
+  // v1.0.94 — a folder the app REBUILT says so, and says how to get the real one back: its
+  // name was guessed from its songs, and the Drive link restores the original name and tree.
+  if (cf.placeholder) {
+    sub.textContent += ' · שוחזרה אוטומטית (השם נוחש מהשירים). אם היא מגוגל דרייב — הדביקו שוב את הקישור לתיקיה בלשונית "הוספה" כדי להחזיר את השם והמבנה המקוריים';
+  }
   body.appendChild(title);
   body.appendChild(sub);
 
@@ -5803,7 +5912,9 @@ async function renameCustomFolder(cf) {
   if (!next || next === cf.title) return;
   const clash = customFolderTitleClash(next, await db.listCustomFolders(libScope), { exceptId: cf.folderId });
   if (clash) { toast('כבר יש תיקיה בשם הזה'); return; }
-  await db.putCustomFolder({ ...cf, title: next });
+  // v1.0.94 — the parent named it, so it is no longer a guess: a rebuilt placeholder stops
+  // being one (drive.mergeCustomFolder would otherwise let any real row replace this name)
+  await db.putCustomFolder({ ...cf, title: next, placeholder: false });
   await refreshFoldersList();
   renderHome();
   maybeSchedulePush();
@@ -5892,7 +6003,9 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
   });
   if (!tree.ok) return { ok: false, message: driveFolderOutcome({ ok: false }), added: 0 };
 
-  const index = await db.loadMergeIndex(scope);
+  // v1.0.94 — `let`: the library as this walk sees it, read ONCE (the re-file below decides
+  // from it; every move is re-checked against the live record when written — placeVideos)
+  let index = await db.loadMergeIndex(scope);
   const denySet = await db.loadDenySet(scope);
   const existingFolders = await db.listCustomFolders(scope);
   let plan = planDriveTreeImport({
@@ -5920,10 +6033,11 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
     if (q.ask && await confirmKid({ emoji: q.emoji, title: q.title, text: q.text, ok: q.ok, cancel: q.cancel })) {
       const scopes = [...new Set([scope, activeProfileId ? db.profScope(activeProfileId) : null])].filter(Boolean);
       for (const key of plan.deniedKeys) for (const sc of scopes) await db.unDeny(sc, key);
+      index = await db.loadMergeIndex(scope);
       plan = planDriveTreeImport({
         folders: tree.folders,
         existingFolders: await db.listCustomFolders(scope),
-        existingKeys: new Set((await db.loadMergeIndex(scope)).keys()),
+        existingKeys: new Set(index.keys()),
         denyKeys: await db.loadDenySet(scope),
         rootId: driveFolderId,
         mediaKindOf: (f) => cls.mediaKindFromMime(f.mimeType) || cls.mediaKindFromName(f.name)
@@ -5932,9 +6046,18 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
   }
 
   const { sortKeyFor } = await import('./order.js');
+  const { planDriveRefile, refileEligible, pickPlaceholderToAdopt } = await import('./plan.js');
   const now = Date.now();
   let rootFolderId = folder ? folder.folderId : null;
   let step = 0;
+  // v1.0.94 — the library's folders AS THIS WALK CHANGES THEM: a placeholder upgraded for one
+  // Drive folder is a real row for the next, and a row created a moment ago is not a lost one.
+  const rowsNow = new Map((await db.listCustomFolders(scope)).map((r) => [r.folderId, r]));
+  // Only THIS device's driveSyncedAt is a throttle; touch:false — a refresh is not an edit,
+  // and must never win last-writer-wins over a rename made on another device (or during
+  // this very walk, which the old snapshot-spreading stamp reverted).
+  const stampSynced = (folderId) => db.updateCustomFolder(scope, folderId, { driveSyncedAt: Date.now() }, { touch: false });
+  let restored = 0;
   // v1.0.61 — Drive id → the `cf:` id of the row that represents it, so a child can name its
   // parent. `plan.folders` follows the walk's BREADTH-FIRST order, so a parent is always
   // filled in before the children that look it up (the walk is breadth-first for its own
@@ -5945,6 +6068,24 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
     // minting a second folder for the same Drive id.
     let target = node.existing || (node.isRoot ? folder : null);
     const parentFolderId = node.parentDriveId ? (cfOf.get(node.parentDriveId) || null) : null;
+    // v1.0.94 — NO ROW FOR THIS DRIVE FOLDER, BUT A REBUILT PLACEHOLDER HOLDS ITS SONGS: the
+    // placeholder carries the folder's ORIGINAL id, so it BECOMES the folder again — real
+    // Drive name, place in the tree, the Drive link — and not one song moves. Re-checked
+    // inside the write (still a placeholder?): a real row that arrived meanwhile wins as-is.
+    if (!target) {
+      const adoptId = pickPlaceholderToAdopt({ keys: node.existingKeys || [], recordsByKey: index, rowsById: rowsNow });
+      if (adoptId) {
+        const upgraded = await db.updateCustomFolder(scope, adoptId, (cur) => (cur.placeholder ? {
+          title: node.title, driveFolderId: node.driveFolderId,
+          driveRootId: node.isRoot ? null : driveFolderId, parentFolderId, placeholder: false
+        } : null));
+        if (upgraded) {
+          target = upgraded;
+          rowsNow.set(target.folderId, target);
+          restored += (node.existingKeys || []).filter((k) => homeOf(index.get(k)) === target.folderId).length;
+        }
+      }
+    }
     if (!target) {
       const order = now + (step += 1);
       target = {
@@ -5958,16 +6099,37 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
         order, createdAt: order
       };
       await db.putCustomFolder(target);
+      rowsNow.set(target.folderId, target);
     } else if ((target.parentFolderId || null) !== parentFolderId) {
       // THE MIGRATION, and it is the whole of it: every row of a tree imported before
       // v1.0.61 is matched here by its driveFolderId and gains its parent in place, so the
       // discs leave the home screen by themselves on the next add or refresh. It also
-      // repairs a row whose parent was deleted and re-made.
-      target = { ...target, parentFolderId };
-      await db.putCustomFolder(target);
+      // repairs a row whose parent was deleted and re-made. v1.0.94 — written as a patch
+      // onto the row as it is NOW (the walk is network-bound; a rename made meanwhile stays).
+      target = (await db.updateCustomFolder(scope, target.folderId, { parentFolderId })) || { ...target, parentFolderId };
+      rowsNow.set(target.folderId, target);
     }
     cfOf.set(node.driveFolderId, target.folderId);
     if (node.isRoot) rootFolderId = target.folderId;
+    // v1.0.94 — SONGS ALREADY HERE GO BACK INTO THEIR FOLDER when the folder they name is
+    // GONE (no row at all), and on a fresh paste when they sit in the loose list. Without
+    // this, pasting a Drive link again could never rebuild a lost folder: it minted fresh
+    // EMPTY rows while every song stayed filed under the folder that was gone. The rule is
+    // pure (plan.refileEligible), decided on the walk's snapshot and RE-CHECKED inside the
+    // write against the record as it is then — the walk is network-bound, and a pull, an
+    // approval or a rejection landing meanwhile must not be reverted by a stale copy (the
+    // first version wrote whole snapshots back, stamped NOW, so they won on every device).
+    const moves = planDriveRefile({
+      keys: node.existingKeys || [], targetFolderId: target.folderId,
+      recordsByKey: index, rowsById: rowsNow, first
+    });
+    if (moves.length) {
+      const moved = await db.placeVideos(scope, moves, {
+        accept: (cur) => refileEligible(cur, { targetFolderId: target.folderId, rowsById: rowsNow, first })
+      });
+      restored += moved.length;
+      if (moved.length) await stampSynced(target.folderId);
+    }
     if (!node.add.length) continue;
     const recs = node.add.map((f, i) => ({
       scopeId: scope, key: 'file:drive:' + f.driveId, type: 'file', id: null,
@@ -5982,24 +6144,30 @@ async function importDriveFolder(scope, driveFolderId, { folder = null, first = 
       sortKey: sortKeyFor({ origin: 'manual', addedAt: now }) - i,
       publishedAt: null, rowIndex: null, origin: 'manual', state: 'live',
       addedAt: now, approvedAt: now,
+      placedAt: now, // v1.0.94 — a placement: the walk put it in this folder
       thumbId: null, thumbUrl: null, localPath: null, updatedAt: now
     }));
     await db.putVideos(recs);
     // stamp EVERY folder we just refilled, not only the root: each one carries its own
     // driveFolderId, and the stamp is what the throttle reads
-    await db.putCustomFolder({ ...target, driveSyncedAt: Date.now() });
+    await stampSynced(target.folderId);
   }
   // the root is stamped even when nothing landed in it — it is the anchor the refresh walks
   const rootRow = plan.folders.find((n) => n.isRoot);
   if (rootRow) {
-    const row = rootRow.existing || (folder && folder.driveFolderId === driveFolderId ? folder : null)
-      || (await db.listCustomFolders(scope)).find((f) => f.driveFolderId === driveFolderId);
-    if (row) await db.putCustomFolder({ ...row, driveSyncedAt: Date.now() });
+    const rootId = rootFolderId
+      || (rootRow.existing && rootRow.existing.folderId)
+      || ((await db.listCustomFolders(scope)).find((f) => f.driveFolderId === driveFolderId) || {}).folderId;
+    // v1.0.94 — a PATCH, not a spread of a snapshot from before the walk: the walk is
+    // network-bound (seconds to minutes), the loop above may have re-parented or upgraded this
+    // very row, and the parent may have renamed it meanwhile — the old spread wrote all of
+    // that back, a lost update now visible on every device since rows travel.
+    if (rootId) await stampSynced(rootId);
   }
   return {
-    ok: true, added: plan.added, folderId: rootFolderId,
+    ok: true, added: plan.added, restored, folderId: rootFolderId,
     message: driveFolderOutcome({
-      ok: true, added: plan.added, skipped: plan.skipped, first,
+      ok: true, added: plan.added, skipped: plan.skipped, first, restored,
       folders: plan.folders.filter((n) => !n.isRoot || n.add.length).length,
       truncated: tree.truncated, partial: tree.partial
     })
@@ -6028,10 +6196,19 @@ async function refreshDriveFolders(scope) {
     const all = await db.listCustomFolders(scope);
     const roots = new Set(all.map((f) => f && f.driveFolderId).filter(Boolean));
     const rows = all.filter((f) => f && f.driveFolderId && !(f.driveRootId && roots.has(f.driveRootId)));
+    // v1.0.94 — ONE walk per Drive folder. Two rows can name the same Drive folder (a device
+    // that restored a lost tree by pasting the link again, beside the original root still
+    // held on another device): each walk re-lists the whole tree, so walking both doubled
+    // the listing traffic every half hour, for ever — both rows are exempt from the sweep.
+    const walked = new Set();
     for (const f of rows) {
+      if (walked.has(f.driveFolderId)) continue;
+      walked.add(f.driveFolderId);
       if (f.driveSyncedAt && Date.now() - f.driveSyncedAt < DRIVE_FOLDER_REFRESH_MS) continue;
       const res = await importDriveFolder(scope, f.driveFolderId, { folder: f, first: false });
-      if (res.ok) added += res.added;
+      // v1.0.94 — songs back in their folder change the home as much as new ones do;
+      // counting only `added` left a restored folder off the screen until some later render
+      if (res.ok) added += res.added + (res.restored || 0);
     }
   } catch { /* housekeeping must never take the entry refresh down with it */ }
   return added;
@@ -6042,10 +6219,11 @@ async function refreshDriveFolders(scope) {
 async function moveVideoToFolder(rec) {
   const chosen = await askFolderDestination({ title: 'להעביר לאיזו תיקיה?', sub: rec.title || '' });
   if (!chosen) return false;
-  const parked = rec.folderId === '~pending' || rec.folderId === '~rejected';
-  await db.setVideoFields(rec.scopeId, rec.key, parked
-    ? { homeFolderId: chosen }
-    : { folderId: chosen, homeFolderId: rec.homeFolderId ? chosen : rec.homeFolderId });
+  // v1.0.94 — through placeVideos: the parking rule is the shared one (normalize.placeInto),
+  // applied to the record as it is now rather than to this row's snapshot, and the move is
+  // stamped `placedAt` — without the stamp it never reached the other devices
+  // (normalize.settlePlacement)
+  await db.placeVideos(rec.scopeId, [{ key: rec.key, folderId: chosen }]);
   await refreshParentList();
   await refreshFoldersList();
   renderHome();
@@ -6939,7 +7117,7 @@ async function renderFolderPick() {
     const ico = document.createElement('span');
     ico.className = 'fp-ico';
     const cf = custom.find((c) => c.folderId === r.folderId);
-    if (cf && cf.artThumbId) mountCustomArt(ico, cf.artThumbId, r.emoji);
+    if (cf && cf.artThumbId) mountCustomArt(ico, cf.artThumbId, r.emoji, cf.artSrcUrl);
     else ico.textContent = r.emoji;
     const nm = document.createElement('span');
     nm.className = 'fp-name';

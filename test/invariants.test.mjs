@@ -246,7 +246,9 @@ test('custom folders converge across devices like every other collection (v1.0.5
   const dbDel = fnSlice(CODE.get('www/js/db.js'), 'export async function deleteCustomFolder(');
   assert.ok(dbDel.indexOf('putDeletedCustomFolders') < dbDel.indexOf("s.delete("),
     'the folder row is deleted before its tombstone is written');
-  assert.match(drive, /putCustomFolder\(\{ \.\.\.e, scopeId: libId \}, \{ preserveTimestamp: true \}\)/,
+  // (v1.0.94 deliberate reshape: the row is built by customFolderForApply, which keeps this
+  //  device's own refresh stamp — the timestamp rule itself is unchanged)
+  assert.match(drive, /putCustomFolder\(\{ \.\.\.customFolderForApply\(cfMine\.get\(e\.folderId\), e\), scopeId: libId \},\s*\{ preserveTimestamp: true \}\)/,
     'applying a remote folder restamps it — the two devices would ping-pong forever');
   // and the per-library purge takes the folder tombstones with it (the v1.0.45 metaKeys bug)
   assert.match(fnSlice(CODE.get('www/js/db.js'), 'export async function purgeProfile('), /cfDelKey\(s\)/,
@@ -3446,8 +3448,11 @@ test('a landed pull redraws the surface the parent is ON, not just the home (v1.
   // write records (files the parent added in Drive since), and it must redraw through the
   // same shared helper — rendering the gallery directly is what left the parent screen
   // stale in v1.0.49.
+  // v1.0.94 DELIBERATE change 3→4: the orphan-folder repair is a FOURTH branch that writes
+  // (rebuilt folder rows, videos moved out of a deleted folder), and a repaired folder must
+  // reach the parent's open screen through the same helper as everything else.
   const calls = (erBody.match(/renderAfterRemoteChange\(\)/g) || []).length;
-  assert.equal(calls, 3, `entryRefresh calls the shared render ${calls}× — the pull, drive-folder and sync branches must ALL use it`);
+  assert.equal(calls, 4, `entryRefresh calls the shared render ${calls}× — the pull, drive-folder, folder-repair and sync branches must ALL use it`);
   assert.ok(!/nav\.isActive\('gallery'\)\)\s*(await\s*)?renderHome\(\)/.test(erBody),
     'entryRefresh renders the gallery directly again — the parent screen goes stale');
 });
@@ -3926,7 +3931,9 @@ test('🕒 נצפה לאחרונה is wired end to end, and device-local (v1.0.5
   // 6) THE ROW-DELETE PREDICATE IS THE SHARED PURE ONE. The inline version it replaced ate
   //    ⭐ (see normalize.stateRowIsSpent); the next feature to share this row must extend
   //    that function, not write a second answer here.
-  assert.match(dbm, /import \{ stateRowIsSpent \} from '\.\/normalize\.js'/,
+  // (v1.0.94 deliberate reshape: the same single import now also carries placeInto/homeOf —
+  //  db.placeVideos applies the shared parking rule inside its write transaction)
+  assert.match(dbm, /import \{[^}]*\bstateRowIsSpent\b[^}]*\} from '\.\/normalize\.js'/,
     'db.js no longer uses the shared row-spent predicate');
   assert.equal((dbm.match(/stateRowIsSpent\(rec\)/g) || []).length, 2,
     'both row-clearing paths (position + watch stamp) must use the shared predicate');
@@ -4102,8 +4109,17 @@ test('the download cache prunes itself, and deletion reaches the device (v1.0.58
   assert.match(media, /touchLocalUse\(item\)/, 'playing a cached file no longer records that it was used');
   assert.match(fnSlice(media, 'export async function prepareStreamSrc('), /touchLocalUse/,
     'the use stamp left the one place that knows a local copy was served');
-  // device-local, exactly like localPath: it describes a file on THIS tablet
-  assert.doesNotMatch(CODE.get('www/js/drive.js'), /localUsedAt/, 'the use stamp travels to other devices');
+  // device-local, exactly like localPath: it describes a file on THIS tablet.
+  // ⚠️ v1.0.94 — THIS GUARD WAS VACUOUS, and the stamp travelled for a month: it banned the
+  // WORD from drive.js, while serializeDb's strip list (`localPath, thumbId`) simply never
+  // named it — so it rode out with every video, and the family's backup carried 13 of them.
+  // A ban on a word cannot see an omission; it also forbade the one line that fixes it. The
+  // rule is pinned where it lives now: the strip, and the apply side keeping its own clock.
+  const drive = CODE.get('www/js/drive.js');
+  assert.match(fnSlice(drive, 'export function serializeDb('), /\(\{ localPath, thumbId, localUsedAt, \.\.\.v \}\) => v/,
+    'the use stamp is no longer stripped from the backup');
+  assert.match(fnSlice(drive, 'async function applyRemoteDoc('), /rec\.localUsedAt = \(mine && mine\.localUsedAt\) \|\| null/,
+    "a pull adopts a peer's use stamp — the cache prune would run on another device's clock");
 
   // 3) BOTH SWEEPS RUN AFTER THE PULL AND THE DRIVE REFRESH, never before: those two ADD
   //    content, and a sweep that ran first would judge a folder empty a second before its
@@ -5436,4 +5452,139 @@ test("a headset/hands-free forward+back key changes track, in both java copies (
   assert.match(cmd, /if \(miniActive\) await miniSkip\(action === 'next' \? 1 : -1\)/,
     'a headset skip no longer reaches the floating mini-player — the key is silently dead there');
   assert.match(cmd, /else await pipSkip\(action\)/, 'the docked/PiP skip route is gone');
+});
+
+test('v1.0.94 — a lost folder comes back, and nothing in the repair path can delete (wiring)', () => {
+  // No node test executes app.js; this pins the glue around the pure decisions in
+  // test/folder-sync.test.mjs. Every assertion was proven red on a planted regression.
+  const app = CODE.get('www/js/app.js');
+  const er = fnSlice(app, 'async function entryRefresh(');
+  const driveAt = er.indexOf('refreshDriveFolders(');
+  const repairAt = er.indexOf('repairOrphanFolders(');
+  const sweepAt = er.indexOf('sweepEmptyFolders(');
+  assert.ok(repairAt > 0, 'the orphan-folder repair is not wired into the entry refresh');
+  assert.ok(driveAt > 0 && driveAt < repairAt,
+    'the repair must run AFTER the Drive refresh — that puts songs back into REAL rows first');
+  assert.ok(repairAt < sweepAt,
+    'the repair must run BEFORE the empty-folder sweep, which would otherwise judge folders it cannot see');
+  assert.match(er, /await repairOrphanFolders\(await currentLibScope\(\)\)/,
+    'the repair must read the RESOLVED scope and be awaited (the v1.0.25 race)');
+
+  const repair = fnSlice(app, 'async function repairOrphanFolders(');
+  assert.match(repair, /planOrphanFolderRepair\(/, 'the repair no longer delegates to the pure decision');
+  assert.ok(repair.indexOf('customFolderUsage(') > 0 && repair.indexOf('customFolderUsage(') < repair.indexOf('recordsFiledUnder('),
+    'the cheap key-only scan must gate the record load — this runs on every home entry');
+  // REVIEW FIX — and the scan itself is skipped while nothing has been written since the last
+  // clean one (the buildFolders cache rule): this runs on EVERY home entry.
+  const gateAt = repair.indexOf('orphanScanClean.seq === seq) return 0');
+  assert.ok(gateAt > 0 && gateAt < repair.indexOf('customFolderUsage('),
+    'the repair re-scans the library on every home entry although nothing changed');
+  assert.match(repair, /const seq = db\.dataVersion\(\)/, 'the clean-scan memo is no longer keyed on the write counter');
+  assert.match(repair, /putCustomFolder\(row\)/, 'rebuilt rows are no longer written');
+  // the moves out of a DELETED folder are re-checked against the live record (placeVideos)
+  assert.match(repair, /db\.placeVideos\(scope, plan\.toSheet, \{ accept: \(cur, m\) => homeOf\(cur\) === m\.from \}\)/,
+    'the repair writes its moves from a snapshot again — a video moved meanwhile would be dragged back');
+  assert.doesNotMatch(repair, /setVideoFields\(|putVideos\(/, 'the repair bypasses placeVideos');
+  assert.doesNotMatch(repair, /deleteCustomFolder\(|deleteVideo|purge/i, 'a repair must never delete anything');
+  assert.match(repair, /maybeSchedulePush\(\)/, 'a repaired folder must reach the backup');
+});
+
+test('v1.0.94 — pasting a Drive link again restores the folder IN PLACE, and no write is a stale snapshot (wiring)', () => {
+  const app = CODE.get('www/js/app.js');
+  const imp = fnSlice(app, 'async function importDriveFolder(');
+  // 1) A Drive folder with no row BECOMES the rebuilt placeholder holding its songs — the
+  //    same id every song already names, so nothing moves and nothing is swept. Re-checked
+  //    inside the write: a real row that arrived meanwhile is not overwritten.
+  assert.match(imp, /pickPlaceholderToAdopt\(\{ keys: node\.existingKeys/, 'a re-paste no longer upgrades the rebuilt folder in place');
+  assert.match(imp, /db\.updateCustomFolder\(scope, adoptId, \(cur\) => \(cur\.placeholder \? \{/,
+    'the upgrade no longer re-checks that the row is still a placeholder — a real row would be overwritten');
+  assert.match(imp, /placeholder: false/, 'an upgraded folder would stay a guess (and never travel)');
+  // 2) songs whose folder is GONE go back — decided on the snapshot, RE-CHECKED in the write
+  assert.match(imp, /planDriveRefile\(\{[\s\S]*?keys: node\.existingKeys[\s\S]*?first\s*\}\)/,
+    'the walk no longer re-files songs that are already here — a re-paste mints EMPTY folders again');
+  assert.match(imp, /db\.placeVideos\(scope, moves, \{\s*accept: \(cur\) => refileEligible\(cur,/,
+    'the re-file writes snapshots again — a pull or a rejection landing during the walk would be reverted everywhere');
+  assert.doesNotMatch(imp, /putVideos\(batch\)|recordsNow/, 'the snapshot-writing re-file is back');
+  assert.match(imp, /approvedAt: now,\s*placedAt: now,/, 'a song the walk files must carry its placement stamp');
+  // 3) EVERY stamp is a patch on the live row, and a refresh stamp is not an edit
+  assert.match(imp, /const stampSynced = \(folderId\) => db\.updateCustomFolder\(scope, folderId, \{ driveSyncedAt: Date\.now\(\) \}, \{ touch: false \}\)/,
+    'a refresh stamp bumps updatedAt again — housekeeping would beat a rename made on another device');
+  // Pinned by COUNT, not by the names of the snapshots: the first version banned
+  // `{ ...target|row|fresh` and stayed green with the root stamp spread from
+  // `rootRow.existing` instead (proven by its own plant).
+  assert.equal((imp.match(/putCustomFolder\(/g) || []).length, 1,
+    'only the brand-new row may be put whole — every other folder write must patch the live row (updateCustomFolder)');
+  assert.doesNotMatch(imp, /putCustomFolder\(\{\s*\.\.\./, 'a folder row is written from a snapshot spread again — a rename made during the walk is lost');
+  assert.match(imp, /if \(rootId\) await stampSynced\(rootId\);/, 'the root stamp no longer patches the live row');
+  assert.match(imp, /db\.updateCustomFolder\(scope, target\.folderId, \{ parentFolderId \}\)/,
+    'the re-parent writes a snapshot again');
+  assert.match(imp, /restored,\s*\n?\s*folders:|first, restored/, 'the outcome no longer says the songs came back');
+  const refresh = fnSlice(app, 'async function refreshDriveFolders(');
+  assert.match(refresh, /res\.added \+ \(res\.restored \|\| 0\)/, 'a refresh that only restored songs leaves the home stale');
+  assert.match(refresh, /if \(walked\.has\(f\.driveFolderId\)\) continue;/,
+    'two rows for one Drive folder are both walked again — double the listing traffic, every half hour');
+  // 4) the db side: the fields come from the record AS IT IS in the write transaction
+  const dbm = CODE.get('www/js/db.js');
+  const place = fnSlice(dbm, 'export async function placeVideos(');
+  assert.match(place, /if \(typeof accept === 'function' && !accept\(cur, m\)\) return;/, 'placeVideos no longer re-checks the precondition');
+  assert.match(place, /videos\.put\(\{ \.\.\.cur, \.\.\.placeInto\(cur, m\.folderId, now\), updatedAt: now \}\)/,
+    'placeVideos stopped computing the move from the live record with the shared parking rule');
+  const upd = fnSlice(dbm, 'export async function updateCustomFolder(');
+  assert.match(upd, /if \(touch\) next\.updatedAt = Date\.now\(\);/, 'updateCustomFolder lost its edit/housekeeping split');
+});
+
+test('v1.0.94 — every deliberate placement carries placedAt, and the merges judge by it (wiring)', () => {
+  const app = CODE.get('www/js/app.js');
+  // Pinned on the WRITTEN FIELDS, both branches: the first version matched /placedAt/ and
+  // stayed green with the stamp dropped from the write, because the `const placedAt` line
+  // still named it (proven by its own plant).
+  // REVIEW FIX: every move goes through db.placeVideos, which stamps it with the ONE shared
+  // parking rule (normalize.placeInto) — four hand-written copies of that rule were one drift
+  // away from parking a video in the child's view.
+  const move = fnSlice(app, 'async function moveVideoToFolder(');
+  assert.match(move, /db\.placeVideos\(rec\.scopeId, \[\{ key: rec\.key, folderId: chosen \}\]\)/,
+    "a parent's move bypasses placeVideos — unstamped, it never reaches the other devices");
+  assert.match(fnSlice(CODE.get('www/js/db.js'), 'export async function moveFolderVideos('),
+    /placeVideos\(scopeId, [\s\S]*?accept: \(cur\) => homeOf\(cur\) === folderId/,
+    'deleting a folder with "keep its videos" bypasses placeVideos — unstamped, it strands them on every other device');
+  for (const f of ['www/js/app.js', 'www/js/db.js', 'www/js/plan.js']) {
+    assert.doesNotMatch(CODE.get(f), /homeFolderId: rec\.homeFolderId \?|fields: parked/,
+      `${f} hand-writes the parking rule for a move again — use normalize.placeInto`);
+  }
+  assert.match(fnSlice(CODE.get('www/js/share.js'), 'async function routeShare(') || CODE.get('www/js/share.js'), /placedAt: now/,
+    'a shared video is a placement too');
+  const drive = CODE.get('www/js/drive.js');
+  assert.doesNotMatch(drive, /\bmergeVideoRecord\(/,
+    'drive.js merges two copies of a record WITHOUT the placement rule — use mergeVideoCopies');
+  assert.match(fnSlice(drive, 'export function mergeDbFiles('), /mergeVideoCopies\(/, 'the document merge loses the placement rule');
+  assert.match(fnSlice(drive, 'async function applyRemoteDoc('), /mergeVideoCopies\(mine,/, 'a pull merges a record without the placement rule');
+  for (const plan of ['export function planChannelApply(', 'export function planSiteApply(', 'export function planCustomFolderApply(']) {
+    assert.match(fnSlice(drive, plan), /newerRemoteRows\(/, `${plan} puts remote rows without asking whether they are newer`);
+  }
+  // REVIEW FIX: a rebuilt placeholder and the refresh stamp stay on the device (behaviour in
+  // folder-sync.test.mjs; this pins that both halves are wired where the document is made
+  // and where it is applied)
+  assert.match(fnSlice(drive, 'export function serializeDb('), /customFolders: travellingFolderRows\(lib\.customFolders\)/,
+    'placeholders travel again — an app before v1.0.94 would overwrite its REAL folder with the guess');
+  assert.match(fnSlice(drive, 'async function applyRemoteDoc('), /customFolderForApply\(cfMine\.get\(e\.folderId\), e\)/,
+    "a pull overwrites this device's refresh stamp (or keeps a replaced row marked as a guess)");
+});
+
+test('v1.0.94 — a folder picture reaches the other devices, and a rebuilt folder says what it is (wiring)', () => {
+  const app = CODE.get('www/js/app.js');
+  const mount = fnSlice(app, 'function mountCustomArt(');
+  assert.match(mount, /fetchFolderArt\(thumbId, srcUrl\)/, 'a peer\'s folder picture is never fetched — the emoji for ever');
+  assert.match(mount, /\/\^https:\/i\.test\(String\(srcUrl\)\)\) blob = await fetchFolderArt/,
+    'only an https picture may be fetched onto a child\'s screen');
+  const calls = (app.match(/mountCustomArt\(/g) || []).length - 1; // minus the declaration
+  const withSrc = (app.match(/mountCustomArt\([^)]*(?:artSrcUrl)\)/g) || []).length;
+  assert.equal(withSrc, calls, 'a mountCustomArt call site does not pass the picture URL');
+  assert.match(fnSlice(app, 'async function renameCustomFolder('), /placeholder: false/,
+    'a folder the parent named is still treated as a guess');
+  assert.match(fnSlice(app, 'async function customFolderRow('), /cf\.placeholder/,
+    'a rebuilt folder does not tell the parent how to restore the real one');
+  // a search result is the SAME tile as the home's, so it must carry the child count too
+  for (const builder of ['async function buildSearchIndex(', 'async function buildFolderSearchIndex(']) {
+    assert.match(fnSlice(app, builder), /children: f\.children \|\| 0/, `${builder} drops the child count — a collection reads "0 סרטונים"`);
+  }
 });
