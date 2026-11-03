@@ -321,6 +321,48 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.0.96 — **THE BOOT RESUME ENDS IN SOUND, NOT IN A PAUSED PAGE** (field report on
+  v1.0.95, same day: "לפעמים הסרטון מתנגן מיד בעת הפתיחה ולפעמים הוא נפתח אבל בהשהייה…
+  בכל ניסיון פתיחה מחדש קיבלתי תוצאה שונה. זה קרה גם בסרטון יוטיוב וגם בשיר").
+  - **"SOMETIMES" IS THE DIAGNOSIS.** Intermittent-on-both-engines rules out every policy
+    story at once: a gesture policy would refuse EVERY time ("sometimes yes" proves
+    Capacitor's `setMediaPlaybackRequiresUserGesture(false)` is live — verified against the
+    6.x source), and a YouTube-side rule cannot pause an mp3. What remains is a RACE: each
+    engine fires play exactly ONCE — the file engine's `play()` rejection is swallowed BY
+    DESIGN, YouTube gets one `playVideo()` at onReady — against a cold boot's moving target
+    (entry-refresh jank, a slow IFrame-API load, audio-focus bounces). A lost race stayed
+    paused forever; 95 versions of finger-opened videos never saw it because a finger was
+    there to press play.
+  - **THE FIX IS A BOUNDED OBSERVE-AND-KICK, NOT ENGINE SURGERY** (`armBootPlayNudge`,
+    armed by `maybeBootResume` right after the boot open — player.js is UNTOUCHED; the
+    nudge drives the existing `playbackState()`/`resumeCurrent()` pair). Pure
+    `playerlogic.bootPlayNudge({mounted, playing, userPaused})` → `'kick' | 'wait' | 'stop'`
+    decides each tick: kick a mounted-but-silent player; WAIT when nothing is mounted yet
+    (the YT API still loading on morning Wi-Fi — giving up on the first tick would miss the
+    slowest lost races); stop on success. Junk reads as 'stop' — the fail direction is the
+    status quo (a paused video costs one tap; a blind kick is sound nobody asked for).
+  - **WHAT THE NUDGE MUST NEVER DO, each pinned**: override a pause a PERSON chose (the
+    v1.0.72 mark — `userPaused` reaches the pure rule, and `resumeCurrent` is called only
+    when it is absent); act on a screen that moved on (every tick re-checks watch-active +
+    the SAME key + no modal/PIN — the logoTarget rule, and a child switching video
+    mid-schedule ends the chain by the key change); outlive its schedule
+    (`BOOT_NUDGE_DELAYS_MS` [1200, 2600, 4500, 7000] — a FIXED array, the v1.0.58
+    bound-the-loop rule, and the terminator line is the constant's live consumer); or run on
+    any open but the boot's (armed in exactly one place, inside the once-per-process hook,
+    so overlap is unrepresentable). A 'kick' keeps checking — one press can lose the same
+    race again; the GOOD runs see ZERO kicks (the first tick reads 'playing' and stops), so
+    the 95-version tap paths are untouched by construction as well as by scope.
+  - 1 unit test (the matrix: kick/wait/stop, userPaused precedence, junk totality) + the
+    v1.0.95 invariants guard extended by 7 assertions (the arm after the open, the
+    terminator, both screen gates, the userPaused input, the pure routing, the
+    `resumeCurrent` kick), **every one proven red on a planted regression (8 plants)**.
+    **Browser-verified end to end against the real app with a stubbed engine (9 checks)**:
+    a swallowed onReady play (the lost race exactly) kicked to PLAYING by the first tick
+    with exactly ONE kick and a chain that stops; a good run with ZERO kicks; and a pause
+    made through the real `markUserToggle` path standing through the whole schedule with
+    zero kicks. **The cured intermittence itself is a DEVICE item: ~5 cold opens per
+    engine (TESTING.md) — one good run proves nothing about a race.**
+
 - v1.0.95 — **המשך ניגון בעת כניסה: THE LAST VIDEO RESUMES ON LAUNCH** (user request:
   "בעת כניסה לאפליקציה ולאחר טעינת הפרופיל הרצוי, הסרטון האחרון שנוגן יתחיל להתנגן מהנקודה
   שממנה עצרנו"), **opt-in, per profile, SYNCED, OFF unless a parent turns it on** —
@@ -358,9 +400,11 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
     unwrapped). The screen is RE-CHECKED after every await (the logoTarget rule).
   - ⚠️ **NO USER ACTIVATION ON A COLD START ⇒ NO FULLSCREEN**: the request inside openWatch
     is refused by the platform and the video opens in the ordinary docked player (⛶ still
-    enlarges; the settings hint says so). On DEVICE the audio does start (Capacitor disables
-    the media-gesture requirement); in a desktop browser autoplay is blocked — verified with
-    a stubbed engine, and **real cold-start sound is a DEVICE checklist item**.
+    enlarges; the settings hint says so). On DEVICE the audio is ALLOWED to start (Capacitor
+    disables the media-gesture requirement) — ⚠️ **but the field showed it start only
+    SOMETIMES**: the one-shot play races the cold boot and a lost race stayed paused, fixed
+    in v1.0.96 (the play nudge — see that entry). In a desktop browser autoplay is blocked —
+    verified with a stubbed engine, and **real cold-start sound is a DEVICE checklist item**.
   - 2 unit tests (`bootResumeTarget`: ordering incl. the finished-first case, Map+object,
     totality) + the settings tie (both orders) + an on-the-wire per-profile merge twin
     (gdrive) + 1 invariants guard (the v1.0.86 toggle template with inverted defaults, the
