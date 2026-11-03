@@ -216,6 +216,14 @@ for anything destructive, and purge it afterwards.
       on a small playlist the button simply disappears at the end (no error).
 
 ### Playback
+- [ ] **Boot resume** (v1.0.95): enable "המשך ניגון בעת כניסה", stop a video mid-way,
+      force-close the app, reopen → after the profile loads, THAT video resumes from ~3s
+      before the stop point, **in the ordinary (windowed) player with real SOUND and no
+      touch** — the cold start has no user activation, so fullscreen is expected to be
+      refused (⛶ still enlarges; the browser proved the flow with a stubbed engine, but
+      autoplay-with-sound on a cold start only a device can prove). Let the last video END
+      → the next launch lands on the home and plays nothing. With the flag OFF (the
+      default): nothing changes.
 - [ ] **Continuous play** (v1.0.25): enable it for one child, let a video end → the countdown
       overlay appears and the next video starts without leaving the player. ✋ returns to the
       folder. With it OFF, a video ending returns to the folder as before.
@@ -587,3 +595,23 @@ node -e "import('./www/js/update.js').then(m=>console.log(m.extractReleaseNotes(
       the LOCKED FOLDER, not the gallery.
 - [ ] TV: the padlock is reachable with the D-pad on both the home and a folder, and the
       duration presets are focusable.
+
+### TV kiosk key guard (v1.0.95 — pure java; NOTHING here can be proven off-device, and
+### the behaviour varies BY TV MODEL, so this list is the feature's real acceptance test)
+- [ ] **The reported hole, on the family's own TV**: exit lock ON → press the remote's
+      YouTube/Netflix shortcut button. PASS is either outcome: nothing happens at all
+      (layer 1 swallowed the key), or the other app flashes and ours returns to the front
+      within ~a second (layer 2 reclaimed). FAIL = the child stays in the other app — then
+      the next step is the AccessibilityService escalation (deliberately not shipped yet).
+- [ ] **Nothing the child NEEDS went dead under the lock**: D-pad + OK still drive the whole
+      UI, BACK still works, VOLUME still changes (it must reach the system), the PIN digits
+      still type on a remote with numbers, and a headset's ⏯/⏮/⏭ still work (media keys are
+      whitelisted — the MediaSession owns them).
+- [ ] **Legitimate departures still leave**: with the lock on, the parent's donate link /
+      share / the updater / the Google consent / a file picker must OPEN and STAY open —
+      each flags `noteLegitLeave()`, and the watchdog must not yank it back. (On a TV most
+      of these live behind the PIN; the updater is the easy one to try.)
+- [ ] **The guard follows the SETTING live**: turn exit lock OFF in settings → the shortcut
+      buttons work again immediately (no relaunch); ON → blocked again.
+- [ ] **A tablet is untouched**: with exit lock ON on a touch tablet with a Bluetooth
+      keyboard, typing into the parent's fields still works — the guard is TV-only.
