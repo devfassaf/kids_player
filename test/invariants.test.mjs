@@ -1030,8 +1030,15 @@ test('continuous play routes through planAutoplay, and onExit says WHY (v1.0.25)
   // A chain must not survive the child leaving, and a tap must beat the queued video.
   assert.match(app, /resetAutoplayChain\(\); \/\/ a queued next video must never follow/,
     'leaving the watch view no longer cancels a pending countdown');
+  // v1.0.95 reshape: this was `ow.slice(0, 600)` — a char window, and the openWatch
+  // signature growing (the bootResume opts) pushed the call past it on CORRECT code (the
+  // exact trap TESTING.md names). The real invariant is the ORDER openWatch's own comment
+  // states: the cancel is synchronous and BEFORE the fullscreen request — so anchor there.
   const ow = app.slice(app.indexOf('async function openWatch('));
-  assert.match(ow.slice(0, 600), /cancelAutoplay\(\)/, 'opening a video does not cancel the countdown');
+  const owHead = ow.slice(0, ow.indexOf('enterPlayerFullscreen()'));
+  assert.ok(owHead.length > 0, 'lost the openWatch → enterPlayerFullscreen anchor');
+  assert.match(owHead, /cancelAutoplay\(\)/,
+    'opening a video does not cancel the countdown before the fullscreen request');
 });
 
 test('the chain SKIPS wrapped gifts through autoplayNextTarget, and the backstop stays (v1.0.89)', () => {
@@ -2801,6 +2808,88 @@ test('the open-in-fullscreen setting is wired end to end (v1.0.86)', () => {
   const html = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
   assert.match(html, /id="fullscreen-toggle" type="checkbox" checked/,
     'the markup default is no longer CHECKED — the screen would lie about an unwritten setting');
+});
+
+test('boot resume is wired end to end, and NOTHING plays without a usable stop point (v1.0.95)', () => {
+  // Per-profile, SYNCED, OFF unless written — and the whole feature is app.js wiring no
+  // node test can execute, so this pins it the way the v1.0.86 guard above pins its
+  // sibling. Comment-stripped source throughout.
+  const app = CODE.get('www/js/app.js');
+
+  // 1) the toggle template, inverted defaults: cache rides loadGiftStates with `=== true`
+  //    and a FAILED read falls back to OFF — an unreadable store must never start sound
+  const load = fnSlice(app, 'async function loadGiftStates()');
+  assert.match(load, /bootResumeEnabled = \(await getSetting\(activeProfileId, 'bootResume', false\)\) === true/,
+    'loadGiftStates no longer refreshes the cached flag, or reads it with the wrong default');
+  assert.match(load, /catch \{ bootResumeEnabled = false; \}/,
+    'a failed settings read no longer falls back to OFF — a junk store could start sound');
+  const handler = handlerBody(app, "$('boot-resume-toggle').addEventListener('change'");
+  assert.ok(handler, 'the boot-resume toggle handler is gone');
+  assert.match(handler, /putSetting\(activeProfileId, 'bootResume', e\.target\.checked\)/,
+    'the toggle no longer writes the synced setting');
+  assert.match(handler, /bootResumeEnabled = e\.target\.checked/,
+    'the toggle no longer updates the cache the write gates and the launch hook read');
+  assert.match(handler, /maybeSchedulePush\(\)/, 'the change never reaches the other devices');
+  assert.match(app, /\$\('boot-resume-toggle'\)\.checked = \(await getSetting\(activeProfileId, 'bootResume', false\)\) === true/,
+    'refreshParent no longer loads the toggle, or loads it with the wrong default');
+  assert.match(CODE.get('www/js/settings.js'), /bootResume: false/,
+    'the SAFE_ON_TIE entry is gone — the string fallback answers TRUE on a tie, i.e. sound');
+  assert.match(app, /'boot-resume-owner'/,
+    'the owner label is not filled — the row reads as a device switch instead of a per-child one');
+  const html2 = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.match(html2, /id="boot-resume-toggle" type="checkbox" \/>/,
+    'the markup default is no longer UNCHECKED — the screen would lie about an unwritten setting');
+
+  // 2) THE FOUR WIDENED WRITE GATES — the flag must work WITHOUT 'resume'/🕒 being on,
+  //    or it plays nothing forever (the blind spot this feature was designed around):
+  //    positions bank, a finished video clears its point (both players), and the watch
+  //    stamp lands even when 🕒 is off.
+  const save = fnSlice(app, 'function saveWatchPosition(');
+  assert.match(save, /if \(!\(resumeEnabled \|\| bootResumeEnabled\) \|\| !item/,
+    'saveWatchPosition narrowed back to the resume setting — bootResume has no stop point to resume');
+  const ovf = fnSlice(app, 'async function onVideoFinished(');
+  assert.match(ovf, /reason === 'ended' && \(resumeEnabled \|\| bootResumeEnabled\)/,
+    'a finished video keeps a stale stop point — boot would reopen a video that ENDED');
+  const fm = fnSlice(app, 'function finishMini(');
+  assert.match(fm, /if \(resumeEnabled \|\| bootResumeEnabled\) clearWatchPosition\(item\)/,
+    'the mini-player twin of the ended-clear narrowed back — a floated finish leaves a stale point');
+  const stamp = fnSlice(app, 'function stampWatched(');
+  assert.match(stamp, /recentLimit <= 0 && !bootResumeEnabled/,
+    'stampWatched refuses to stamp when 🕒 is off — "the last video" has nowhere to live');
+
+  // 3) the read side: ONLY the boot open resumes regardless of the per-video setting —
+  //    ordinary opens keep today's behaviour exactly
+  const ow = fnSlice(app, 'async function openWatch(item, { bootResume = false } = {})');
+  assert.match(ow, /enabled: resumeEnabled \|\| bootResume,/,
+    'the boot open no longer lands at the stop point (or every open started resuming)');
+
+  // 4) the launch hook: once per process, AFTER the share drain, walking the pure order
+  //    under a BOUNDED number of reads, and refusing every surface that is not a quiet home
+  const act = fnSlice(app, 'async function activateProfile(');
+  const drainAt = act.indexOf('drainShareQueue()');
+  const hookAt = act.indexOf('maybeBootResume()');
+  assert.ok(drainAt >= 0 && hookAt > drainAt,
+    'activateProfile no longer fires the launch hook after the share drain');
+  const hook = fnSlice(app, 'async function maybeBootResume()');
+  assert.match(hook, /if \(bootResumeFired\) return;/, 'the once-per-process latch is gone — a mid-session profile switch would auto-play');
+  assert.match(hook, /hasQueuedShares/, 'a queued share no longer silences the launch — its PIN flow would fight the video');
+  assert.match(hook, /isModalOpen\(\) \|\| nav\.isActive\('pin'\)/, 'a modal/PIN on screen no longer silences the hook');
+  assert.match(hook, /lock\.phase === 'locked' \|\| lock\.phase === 'due'/,
+    'a scheduled break no longer silences the hook — sound would start behind the lock screen');
+  assert.match(hook, /containState\.mode === 'sites' \|\| containState\.mode === 'site'/,
+    'a site containment no longer silences the hook');
+  assert.match(hook, /folderWithinLock\(rec\.homeFolderId \|\| rec\.folderId, containState\.folderId, customFolderRows\)/,
+    'a folder lock no longer bounds the candidate — a video from OUTSIDE the lock would open');
+  assert.match(hook, /bootResumeTarget\(giftStates\)\.slice\(0, BOOT_RESUME_SCAN_MAX\)/,
+    'the walk is unbounded, or stopped routing through the pure order');
+  assert.match(hook, /st\.giftRank && !st\.unwrappedAt\) return/,
+    'a wrapped gift could be auto-opened — the pipSkipTarget rule, belt included');
+  assert.match(hook, /resumeStartAt\(\{ enabled: true/,
+    'the stop-point decision is gone — boot would depend on the per-video resume setting');
+  assert.match(hook, /if \(!\(startAt > 0\)\) return;/,
+    "a video with no usable stop point no longer plays NOTHING — the user's explicit decision");
+  assert.match(hook, /openWatch\(rec, \{ bootResume: true \}\)/,
+    'the open lost its bootResume opt — it would start from 0 instead of the stop point');
 });
 
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
