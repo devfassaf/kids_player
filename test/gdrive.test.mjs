@@ -498,6 +498,32 @@ test('openFullscreen travels per profile and the LATER answer wins (v1.0.86)', (
   assert.equal(mergeDbFiles(parseDb(tieB), parseDb(tieA)).settings.profiles.p1.openFullscreen.v, true);
 });
 
+test('bootResume travels per profile and the LATER answer wins (v1.0.95)', () => {
+  // The v1.0.86 twin, same production path: serialize → parse → merge, both orders.
+  const tablet = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: {}, profiles: { p1: { bootResume: { v: true, at: 100 } } } } });
+  const phone = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: {}, profiles: {
+      p1: { bootResume: { v: false, at: 200 } },  // the parent switched it off LATER
+      p2: { bootResume: { v: true, at: 150 } }    // the sibling's own answer
+    } } });
+  const ab = mergeDbFiles(parseDb(tablet), parseDb(phone));
+  const ba = mergeDbFiles(parseDb(phone), parseDb(tablet));
+  assert.equal(ab.settings.profiles.p1.bootResume.v, false,
+    'the later parental answer lost — the flag does not really sync');
+  assert.equal(ab.settings.profiles.p2.bootResume.v, true,
+    'one child\'s flag leaked onto the sibling — the setting is not per profile');
+  assert.deepEqual(ab.settings, ba.settings, 'order-dependent — two devices never converge');
+  // an exact tie answers OFF (the SAFE_ON_TIE direction — a tie must never start sound),
+  // in both orders. Load-bearing: without the entry the string fallback answers true.
+  const tieA = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: {}, profiles: { p1: { bootResume: { v: true, at: 300 } } } } });
+  const tieB = serializeDb({ profiles: [], libraries: {}, profileState: {}, profileSources: {},
+    settings: { account: {}, profiles: { p1: { bootResume: { v: false, at: 300 } } } } });
+  assert.equal(mergeDbFiles(parseDb(tieA), parseDb(tieB)).settings.profiles.p1.bootResume.v, false);
+  assert.equal(mergeDbFiles(parseDb(tieB), parseDb(tieA)).settings.profiles.p1.bootResume.v, false);
+});
+
 test('a doc from an OLDER app (no settings key) does not wipe ours', () => {
   // The rollout case: a device still on v1.0.24 pushes a document with no `settings` at
   // all. Reading that as "the family cleared everything" would unlock a locked tablet and

@@ -99,6 +99,12 @@ test('an exact tie resolves the SAFE way, and never by argument order', () => {
   // v1.0.32: resume playback — the safe tie is today's behaviour, start from the top
   assert.equal(mergeSettingEntry('resume', e(true, 7), e(false, 7)).v, false, 'start over');
   assert.equal(mergeSettingEntry('resume', e(false, 7), e(true, 7)).v, false);
+  // v1.0.95: boot resume — a tie must never START SOUND on a launch (the bgPlay asymmetry:
+  // "off" costs the parent one tap, "on" plays in a bag at night). Load-bearing, unlike
+  // openFullscreen below: without the SAFE_ON_TIE entry the generic string fallback would
+  // answer true ('t' > 'f'), so these two assertions genuinely require it.
+  assert.equal(mergeSettingEntry('bootResume', e(true, 7), e(false, 7)).v, false, 'no sound on a tie');
+  assert.equal(mergeSettingEntry('bootResume', e(false, 7), e(true, 7)).v, false);
   // v1.0.86: open-in-fullscreen — no safety asymmetry either way, so the tie keeps the
   // shipped behaviour (fullscreen, the default) instead of surprising a family windowed.
   // ⚠️ These two assertions pin the BEHAVIOUR, not the SAFE_ON_TIE entry: the generic

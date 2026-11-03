@@ -784,6 +784,14 @@
           <input id="resume-toggle" type="checkbox" />
           <span>להמשיך סרטון מהנקודה שבה הפסקנו (במקום מההתחלה)<b id="resume-owner" class="setting-owner"></b></span>
         </label>
+        <!-- v1.0.95: boot resume. OFF by default — a launch must never start sound unless a
+             parent explicitly asked for it. Works on its own: the position/watched stamps
+             are banked whenever this OR the resume toggle is on. -->
+        <label class="switch-row">
+          <input id="boot-resume-toggle" type="checkbox" />
+          <span>המשך ניגון מהנקודה האחרונה בעת כניסה לאפליקציה<b id="boot-resume-owner" class="setting-owner"></b>
+            <small class="setting-hint">בפתיחת האפליקציה הסרטון האחרון שנוגן יתחיל מנקודת העצירה, במסך הרגיל (לא במסך מלא). סרטון שנצפה עד הסוף לא יתנגן מחדש.</small></span>
+        </label>
         <!-- v1.0.86: open-in-fullscreen. ON by default (checked) — today's behaviour, so a
              family that never opens this screen sees no change. Only the AUTOMATIC open is
              governed: ⛶ stays, so the child can always enlarge by hand (user decision

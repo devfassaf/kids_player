@@ -176,6 +176,7 @@ public class KidsNativePlugin extends Plugin {
             return;
         }
         try {
+            noteLegitLeave(); // v1.0.95: the browser is a deliberate way out — not a leak
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             getContext().startActivity(i);
@@ -240,6 +241,125 @@ public class KidsNativePlugin extends Plugin {
         call.resolve(ret);
     }
 
+    /* ---------------- TV kiosk key guard (v1.0.95) ---------------- */
+    // The remote's dedicated app buttons (YouTube/Netflix/Prime) walk a child straight out
+    // of the app even with the exit lock on: most TV devices have no screen-pinning setting,
+    // so startLockTask() silently never engages there, and some firmwares launch the target
+    // app below Android entirely (field report 2026-11-03). Two best-effort layers, both
+    // armed ONLY by the synced exitLock setting (pushed from JS — the setPipState shape,
+    // because the OS pin state is NOT the setting on a TV) AND only on a TV:
+    //   1) MainActivity.dispatchKeyEvent swallows every key that is not on the whitelist
+    //      (keyAllowedUnderGuard) — catches remotes whose app buttons arrive as KeyEvents,
+    //      and starves the system's unhandled-key fallback that launches apps on others.
+    //   2) MainActivity.onStop calls maybeReclaimForeground: the app lost the foreground
+    //      with the guard armed and no legitimate departure flagged — pull the task back
+    //      (REORDER_TASKS, a normal install-time permission).
+    // KNOWN BOUNDS, stated rather than papered over: a firmware that handles the button
+    // below Android delivers no key event, and Android 12+ background-activity-launch
+    // enforcement may refuse the re-front — the real proof is the device checklist.
+
+    private static volatile boolean kioskGuardOn = false;
+    private static volatile long legitLeaveAt = 0L;
+    private static final long LEGIT_LEAVE_WINDOW_MS = 15000;
+
+    /** A deliberate way OUT is about to open (share chooser, installer, browser, the Google
+        consent, a system file picker) — the watchdog must not yank the user back from it. */
+    static void noteLegitLeave() { legitLeaveAt = android.os.SystemClock.uptimeMillis(); }
+
+    /** The JS twin of noteLegitLeave, for departures that never cross this plugin — the
+        file pickers open through a DOM input element straight into a system activity. */
+    @PluginMethod
+    public void allowLeave(PluginCall call) { noteLegitLeave(); call.resolve(); }
+
+    /** JS pushes the exitLock SETTING here (applyExitLock, the settings toggle, the boot
+        arm). SystemClock-based and volatile for the same reason the PiP statics are: the
+        key filter and the stop hook read it synchronously, with no bridge in reach. */
+    @PluginMethod
+    public void setKioskGuard(PluginCall call) {
+        kioskGuardOn = Boolean.TRUE.equals(call.getBoolean("on", false));
+        call.resolve();
+    }
+
+    /** Static twin of the isTv @PluginMethod — the key filter runs per key press and has no
+        plugin instance in hand. Cached: the UI mode type is stable for the process's life. */
+    private static volatile int tvModeCached = -1; // -1 unknown, 0 no, 1 yes
+    static boolean isTvStatic(Context ctx) {
+        if (tvModeCached >= 0) return tvModeCached == 1;
+        try {
+            android.app.UiModeManager ui =
+                    (android.app.UiModeManager) ctx.getSystemService(Context.UI_MODE_SERVICE);
+            tvModeCached = (ui != null
+                    && ui.getCurrentModeType() == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION)
+                    ? 1 : 0;
+        } catch (Exception ignored) { tvModeCached = 0; }
+        return tvModeCached == 1;
+    }
+
+    static boolean keyGuardArmed(Context ctx) { return kioskGuardOn && isTvStatic(ctx); }
+
+    /**
+     * The whitelist. Everything the app itself consumes keeps flowing — D-pad + OK (the
+     * whole TV UI, ui/dpad.js), BACK (nav.handleBack), any key that TYPES a character
+     * (the PIN digits and the parent screen's text fields; an app-launch key carries no
+     * unicode char), the media keys (the MediaSession owns them, v1.0.88/92), and VOLUME,
+     * which must reach the SYSTEM untouched. Everything else — the vendor app-shortcut
+     * range (Netflix 181/190/193…, one Sony code shared by several apps), APP_SWITCH,
+     * SEARCH/ASSIST, GUIDE/TV/SETTINGS and every unknown OEM code — is swallowed while
+     * the guard is armed, so neither the WebView nor the system fallback ever acts on it.
+     */
+    static boolean keyAllowedUnderGuard(android.view.KeyEvent e) {
+        int c = e.getKeyCode();
+        if (c >= android.view.KeyEvent.KEYCODE_DPAD_UP
+                && c <= android.view.KeyEvent.KEYCODE_DPAD_CENTER) return true; // 19–23
+        if (c == android.view.KeyEvent.KEYCODE_BACK
+                || c == android.view.KeyEvent.KEYCODE_ENTER
+                || c == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER) return true;
+        if (c == android.view.KeyEvent.KEYCODE_VOLUME_UP
+                || c == android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+                || c == android.view.KeyEvent.KEYCODE_VOLUME_MUTE) return true;
+        if (c == android.view.KeyEvent.KEYCODE_HEADSETHOOK
+                || (c >= android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE
+                        && c <= android.view.KeyEvent.KEYCODE_MEDIA_FAST_FORWARD) // 85–90
+                || c == android.view.KeyEvent.KEYCODE_MEDIA_PLAY
+                || c == android.view.KeyEvent.KEYCODE_MEDIA_PAUSE) return true;
+        try { if (e.getUnicodeChar() != 0) return true; } catch (Exception ignored) { }
+        return false;
+    }
+
+    /**
+     * Layer 2 — the re-front watchdog, called from MainActivity.onStop AFTER super (the
+     * v1.0.76 PiP bookkeeping is order-pinned to run first). Fires only when the guard is
+     * armed, the activity is not finishing (exitApp flags a legit leave anyway), PiP is not
+     * the reason the activity stopped, and nothing legitimate opened a way out in the last
+     * LEGIT_LEAVE_WINDOW_MS. Tries again once, half a second later — some launchers land
+     * their own task a beat after ours stops. TOTAL: a watchdog must never crash onStop.
+     */
+    static void maybeReclaimForeground(Activity a) {
+        try {
+            if (!keyGuardArmed(a)) return;
+            if (a.isFinishing()) return;
+            if (Build.VERSION.SDK_INT >= 24 && a.isInPictureInPictureMode()) return;
+            long since = android.os.SystemClock.uptimeMillis() - legitLeaveAt;
+            if (legitLeaveAt > 0 && since < LEGIT_LEAVE_WINDOW_MS) return;
+            reclaimTask(a);
+            new android.os.Handler(android.os.Looper.getMainLooper())
+                    .postDelayed(() -> { try { reclaimTask(a); } catch (Throwable ignored) { } }, 500);
+        } catch (Throwable ignored) { }
+    }
+
+    private static void reclaimTask(Activity a) {
+        try {
+            android.app.ActivityManager am =
+                    (android.app.ActivityManager) a.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am != null) { am.moveTaskToFront(a.getTaskId(), 0); return; }
+        } catch (Throwable ignored) { }
+        try {
+            Intent i = new Intent(a, MainActivity.class);
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            a.startActivity(i);
+        } catch (Throwable ignored) { }
+    }
+
     /* ---------------- real exit (v1.0.4) ---------------- */
 
     /**
@@ -250,6 +370,7 @@ public class KidsNativePlugin extends Plugin {
     @PluginMethod
     public void exitApp(PluginCall call) {
         call.resolve(); // resolve first — the webview is about to die
+        noteLegitLeave(); // v1.0.95: a PIN-gated exit must not be yanked back by the guard
         Activity a = getActivity();
         if (a == null) { System.exit(0); return; }
         a.runOnUiThread(() -> {
@@ -281,6 +402,7 @@ public class KidsNativePlugin extends Plugin {
         String text = call.getString("text");
         if (text == null || text.isEmpty()) { call.reject("no-text"); return; }
         if (refuseUnderLockTask(call)) return;
+        noteLegitLeave(); // v1.0.95: the chooser is a deliberate way out
         String subject = call.getString("subject");
         try {
             Intent send = new Intent(Intent.ACTION_SEND);
@@ -314,6 +436,7 @@ public class KidsNativePlugin extends Plugin {
         if (mimeType == null || mimeType.isEmpty()) mimeType = "text/plain";
         String subject = call.getString("subject");
         if (refuseUnderLockTask(call)) return;
+        noteLegitLeave(); // v1.0.95: the chooser is a deliberate way out
         try {
             File f = new File(path);
             // v1.0.93 — a PERCENT-ENCODED path (Filesystem.writeFile answers
@@ -685,6 +808,7 @@ public class KidsNativePlugin extends Plugin {
     @PluginMethod
     public void openInstallPermissionSettings(PluginCall call) {
         try {
+            noteLegitLeave(); // v1.0.95: the settings screen is a deliberate way out
             Intent i = new Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                     Uri.parse("package:" + getContext().getPackageName()));
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -719,6 +843,7 @@ public class KidsNativePlugin extends Plugin {
     private void startInstaller(PluginCall call, String path) {
         Context ctx = getContext();
         try {
+            noteLegitLeave(); // v1.0.95: the system installer is a deliberate way out
             File apk = new File(path);
             if (!apk.exists()) { call.reject("file-missing"); return; }
             Uri uri = FileProvider.getUriForFile(ctx, ctx.getPackageName() + ".fileprovider", apk);
@@ -798,6 +923,7 @@ public class KidsNativePlugin extends Plugin {
     public void deviceAuth(PluginCall call) {
         final String title = call.getString("title", "אימות הורה");
         final String subtitle = call.getString("subtitle", "");
+        noteLegitLeave(); // v1.0.95: the device-credential fallback can open a system activity
         Activity a = getActivity();
         if (!(a instanceof androidx.fragment.app.FragmentActivity)) {
             // BridgeActivity is an AppCompatActivity, so this cannot happen today — but a

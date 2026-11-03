@@ -656,6 +656,33 @@ export function recentKeys(states, limit) {
     .map(([key]) => key);
 }
 
+/**
+ * v1.0.95 — PURE: the boot-resume candidates, most recently TOUCHED first.
+ *
+ * The recency stamp is max(playedAt, posAt), NOT playedAt alone, and both halves are
+ * load-bearing: `posAt` is banked every few seconds while a video plays, so it is the
+ * fresher and more precise "what was just on screen" — and it is the ONLY stamp a family
+ * that disabled 🕒 (recentLimit 0) had before this feature widened the stampWatched gate.
+ * `playedAt` covers the other direction: a video watched to the END clears its position
+ * fields, so without it the finished video would vanish from the ordering and a STALE
+ * earlier video would be offered instead of honestly playing nothing (user decision 2:
+ * a finished last-video means no auto-play, not a different video).
+ *
+ * TOTAL like its 🕒 sibling above: a Map or a plain object (the v1.0.39 lesson — giftStates
+ * is a Map), junk rows dropped, junk input answers []. The caller resolves each key against
+ * the live records and applies resumeStartAt — this helper only answers "in what order".
+ */
+export function bootResumeTarget(states) {
+  const entries = states instanceof Map
+    ? [...states.entries()]
+    : Object.entries(states && typeof states === 'object' ? states : {});
+  const stamp = (st) => Math.max(Number(st.playedAt) || 0, Number(st.posAt) || 0);
+  return entries
+    .filter(([key, st]) => key && st && typeof st === 'object' && stamp(st) > 0)
+    .sort((x, y) => stamp(y[1]) - stamp(x[1]))
+    .map(([key]) => key);
+}
+
 /* ---------------- rolling window (v1.0.39) ---------------- */
 
 /**

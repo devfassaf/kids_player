@@ -14,7 +14,7 @@ import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
   setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission,
-  pipSupported, setPipState, onPipChanged, onPipHidden } from './platform.js';
+  pipSupported, setPipState, onPipChanged, onPipHidden, setKioskGuard, allowLeave } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml, rulesForLockedSite, rulesForLockedPage } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -23,7 +23,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   PIN_RECOVERY_DELAY_HOURS, SCHED_LOCK_DEFAULT_DURATION_MIN,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
-  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC,
+  RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC, BOOT_RESUME_SCAN_MAX,
   CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES,
   PIP_TRACK_MAX, TAP_SLOP_PX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
@@ -40,7 +40,7 @@ import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   planChannelSections, planLogoCache, logoFirstPaint, planLogoDelivery,
   screenOffMinutes, evalIdleSleep, sourceDrops,
   keepNewestPerChannel, planChannelWindow, pruneReviewList, protectedWindowKeys,
-  pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys,
+  pruneConfirmText, favActive, favouriteKeys, recentLimitFor, recentKeys, bootResumeTarget,
   planCacheSweep, planEmptyFolderSweep, deleteLocalChoice, formatBytes, folderSearchScope,
   channelSyncModeDialog, channelSyncModeOutcome,
   folderPickOptions, normalizeFolderTitle, customFolderId, customFolderTitleClash,
@@ -86,6 +86,9 @@ let folderPage = 0;
 let folderPagerObj = null;
 let giftStates = new Map();           // key -> profileVideoState record (gifts F9, resume v1.0.32)
 let resumeEnabled = false;            // the active profile's synced 'resume' setting (v1.0.32)
+let bootResumeEnabled = false;        // v1.0.95: the synced 'bootResume' setting — auto-play the
+                                      // last video on app entry. Also widens the position/stamp
+                                      // write gates so the flag works WITHOUT 'resume'/🕒 being on.
 let bgPlayEnabled = false;            // v1.0.63: the active profile's synced 'bgPlay' setting
 let bgPlayLive = false;               // v1.0.84: the media session/service is live for the
                                       // CURRENT playback (any engine) — the control surface for
@@ -201,6 +204,11 @@ async function applyExitLockUi() {
 async function applyExitLock() {
   const on = await exitLockOn();
   kioskCached = on === true; // v1.0.77 — sync mirror for the mini-player's BACK decision
+  // v1.0.95: arm/release the native TV kiosk key guard from the SETTING — on most TVs the
+  // OS pin below never engages at all (no screen-pinning support), so the guard cannot
+  // read the pin state; it needs the answer pushed, the setPipState shape. Riding THIS
+  // function means every caller — activation, the resume re-arm, the boot arm — re-pushes.
+  setKioskGuard(on === true).catch(() => {});
   try {
     const { lockTask } = await import('./platform.js');
     // v1.0.36: PIN ONLY, NEVER UNPIN, on profile activation. stopLockTask() makes many
@@ -1018,7 +1026,7 @@ async function onProfileChip() {
 async function labelProfileSettings() {
   const p = await getActiveProfile();
   const who = p ? ` — ${p.name}` : '';
-  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'fullscreen-owner', 'bgplay-owner', 'pip-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
+  for (const id of ['exit-lock-owner', 'share-approval-owner', 'autoplay-owner', 'resume-owner', 'boot-resume-owner', 'fullscreen-owner', 'bgplay-owner', 'pip-owner', 'sched-lock-owner', 'screen-off-owner', 'keep-newest-owner', 'recent-limit-owner']) {
     const el = $(id);
     if (el) el.textContent = who;
   }
@@ -1911,6 +1919,10 @@ async function loadGiftStates() {
   // v1.0.32: the resume flag rides the same load — tileEl is synchronous and needs both.
   try { resumeEnabled = (await getSetting(activeProfileId, 'resume', false)) === true; }
   catch { resumeEnabled = false; }
+  // v1.0.95: boot resume — same shape and the same failure direction as 'resume': only an
+  // explicit parental "on" may start sound on a launch, so an unreadable store reads as OFF.
+  try { bootResumeEnabled = (await getSetting(activeProfileId, 'bootResume', false)) === true; }
+  catch { bootResumeEnabled = false; }
   // v1.0.63 — cached for the SAME reason: `onAppPause` must stay synchronous (it reads the
   // playhead before pausing), so the answer has to be in memory before the screen goes off.
   try { bgPlayEnabled = (await getSetting(activeProfileId, 'bgPlay', false)) === true; }
@@ -1979,11 +1991,13 @@ function clearWatchPosition(item) {
  * so re-stamping would rebuild the home every 5 seconds for the whole video.
  *
  * Nothing is written while the feature is OFF: the same rule `saveWatchPosition` follows
- * for its position, so a family that set 0 gets no state they did not ask for.
+ * for its position, so a family that set 0 gets no state they did not ask for — UNLESS
+ * bootResume is on (v1.0.95): "the last video" has to live somewhere, and a family that
+ * disabled 🕒 must still get the launch resume they explicitly turned on.
  */
 let stampedWatch = null; // key stamped for the CURRENT opening (cleared by openWatch)
 function stampWatched(item, { force = false } = {}) {
-  if (!item || !item.key || !activeProfileId || recentLimit <= 0) return;
+  if (!item || !item.key || !activeProfileId || (recentLimit <= 0 && !bootResumeEnabled)) return;
   if (stampedWatch === item.key) return;
   if (!force) {
     const st = playbackState();
@@ -1998,7 +2012,9 @@ function stampWatched(item, { force = false } = {}) {
 
 /** Read the live playhead and persist it for `item`, per the pure decision. */
 function saveWatchPosition(item, state = playbackState()) {
-  if (!resumeEnabled || !item || !activeProfileId || !state) return;
+  // v1.0.95: bootResume banks positions too — "resume on entry" must work for a family
+  // that never turned the per-video resume on, or the flag plays nothing forever.
+  if (!(resumeEnabled || bootResumeEnabled) || !item || !activeProfileId || !state) return;
   const decision = resumeSaveDecision({ pos: state.time, dur: state.duration });
   if (decision === 'ignore') return;
   if (decision === 'clear') { clearWatchPosition(item); return; }
@@ -3749,7 +3765,7 @@ async function onVideoFinished(reason = 'ended') {
   // v1.0.32: a video that ENDED starts fresh next time — its saved position (and the
   // tile's progress bar) is gone. Player teardown already ran, so playbackState() is
   // null and no later save can resurrect it. An 'error' exit keeps the position.
-  if (reason === 'ended' && resumeEnabled) clearWatchPosition(item);
+  if (reason === 'ended' && (resumeEnabled || bootResumeEnabled)) clearWatchPosition(item);
 
   // v1.0.57 — a video that ENDED was watched, whatever its length: the interval's
   // RECENT_MIN_PLAY_SEC threshold can never be reached by a 6-second clip, and the player
@@ -4288,7 +4304,7 @@ function onMiniPointerUp(e) {
   if (!moved) expandMini().catch(() => {}); // a tap (not a drag) expands
 }
 
-async function openWatch(item) {
+async function openWatch(item, { bootResume = false } = {}) {
   // v1.0.32: switching video→video — bank the OLD video's stop point BEFORE playItem
   // reuses or tears down the player (the clock goes with it).
   if (currentWatch && currentWatch.key !== item.key) saveWatchPosition(currentWatch);
@@ -4369,9 +4385,12 @@ async function openWatch(item) {
   // v1.0.32: resume — the pure decision; 0 whenever the setting is off, nothing usable
   // is stored, or the stored stop is inside the tail. giftStates mirrors the whole
   // profileVideoState store, so this is a sync lookup, not an IDB read.
+  // v1.0.95: the BOOT open resumes regardless of the per-video 'resume' setting — that is
+  // the whole promise of the bootResume flag ("מהנקודה שממנה עצרנו"). Ordinary opens
+  // (tile tap, autoplay chain, pipSkip) pass no opts and keep today's behaviour exactly.
   const stored = giftStates.get(item.key);
   const startAt = resumeStartAt({
-    enabled: resumeEnabled,
+    enabled: resumeEnabled || bootResume,
     posSec: stored && stored.posSec,
     durSec: stored && stored.durSec
   });
@@ -4454,7 +4473,9 @@ async function miniSkip(dir) {
 function finishMini(reason) {
   const item = currentWatch;
   if (item && reason === 'ended') {
-    if (resumeEnabled) clearWatchPosition(item);
+    // v1.0.95: the bootResume half mirrors onVideoFinished's ended-clear — a video that
+    // FINISHED floating must not leave a stale stop point that boot-resume would reopen.
+    if (resumeEnabled || bootResumeEnabled) clearWatchPosition(item);
     stampWatched(item, { force: true });
   }
   teardownMini();
@@ -5139,6 +5160,7 @@ async function refreshParent() {
   $('exit-lock-toggle').checked = await exitLockOn();
   $('autoplay-toggle').checked = (await getSetting(activeProfileId, 'autoplay', false)) === true;
   $('resume-toggle').checked = (await getSetting(activeProfileId, 'resume', false)) === true;
+  $('boot-resume-toggle').checked = (await getSetting(activeProfileId, 'bootResume', false)) === true;
   // v1.0.86: ON unless explicitly written off — the shareApproval direction, because the
   // default is today's behaviour and only a parent's explicit answer may change it.
   $('fullscreen-toggle').checked = (await getSetting(activeProfileId, 'openFullscreen', true)) !== false;
@@ -8850,6 +8872,68 @@ async function createNewProfile() {
   await activateProfile(p.id);
 }
 
+/**
+ * v1.0.95 — "המשך ניגון בעת כניסה": auto-open the last-watched video on the FIRST profile
+ * activation of the process, per the synced `bootResume` setting (OFF by default).
+ *
+ * ONCE PER PROCESS (the launchSyncDone shape): "entry" means the LAUNCH — including a boot
+ * that lands on the picker and waits for the parent's tap — never a mid-session profile
+ * switch, which is a parental act on a running app (user decision 2026-11-03).
+ *
+ * EVERY refusal errs toward silence, because the failure mode is SOUND nobody asked for:
+ * - a queued share owns this launch (its interactive PIN flow is about to raise);
+ * - a modal or the PIN screen is already up (the update prompt landed first);
+ * - a scheduled break is due or showing (playing behind the lock is the exact class
+ *   v1.0.57 closed on the call-resume path);
+ * - a sites/site containment holds the child OFF the video surface entirely;
+ * - under a FOLDER lock the candidate must sit INSIDE the lock (folderWithinLock — the
+ *   openFolder refusal, applied to the record), or nothing plays;
+ * - a wrapped gift is never opened (the pipSkipTarget rule — belt only: a stamp implies
+ *   it was played, and playing implies unwrapped);
+ * - and a last video with NO usable stop point (finished, or never past the 8s floor)
+ *   plays NOTHING — not "from the beginning" (user decision 2026-11-03: the flag resumes
+ *   an interruption; it does not pick what to watch).
+ *
+ * The candidate order is pure (`plan.bootResumeTarget` — max(playedAt, posAt) desc) and
+ * the walk is BOUNDED (`BOOT_RESUME_SCAN_MAX` findLiveByKey reads): only DELETED records
+ * are walked past; the first record that still exists is THE candidate, and its stop point
+ * alone decides. openWatch gets `{ bootResume: true }` so the seek works without the
+ * per-video 'resume' setting. A cold start carries no user activation, so the fullscreen
+ * request inside openWatch is refused by the platform and the video opens in the ordinary
+ * docked player (⛶ still enlarges it) — a stated bound, not a bug.
+ */
+let bootResumeFired = false;
+async function maybeBootResume() {
+  if (bootResumeFired) return;
+  bootResumeFired = true;
+  try {
+    if (!bootResumeEnabled || !activeProfileId) return;
+    const { hasQueuedShares } = await import('./share.js');
+    if (await hasQueuedShares()) return;
+    if (isModalOpen() || nav.isActive('pin') || nav.isActive('watch')) return;
+    const lock = await evalActiveLock();
+    if (lock.phase === 'locked' || lock.phase === 'due') return;
+    if (containState.active && (containState.mode === 'sites' || containState.mode === 'site')) return;
+    const prefer = [libScope, db.profScope(activeProfileId)].filter(Boolean);
+    let rec = null;
+    for (const key of bootResumeTarget(giftStates).slice(0, BOOT_RESUME_SCAN_MAX)) {
+      rec = await db.findLiveByKey(key, prefer);
+      if (rec) break; // deleted records are walked past; the first LIVE one decides
+    }
+    if (!rec) return;
+    if (containState.active && containState.mode === 'folder'
+        && !folderWithinLock(rec.homeFolderId || rec.folderId, containState.folderId, customFolderRows)) return;
+    const st = giftStates.get(rec.key);
+    if (st && st.giftRank && !st.unwrappedAt) return;
+    const startAt = resumeStartAt({ enabled: true, posSec: st && st.posSec, durSec: st && st.durSec });
+    if (!(startAt > 0)) return; // finished, or below the floor — an honest nothing
+    // the awaits above yield: re-check that nothing claimed the screen meanwhile
+    // (the logoTarget rule — a late decision never paints over a screen that moved on)
+    if (nav.isActive('watch') || isModalOpen() || nav.isActive('pin')) return;
+    await openWatch(rec, { bootResume: true });
+  } catch { /* total — a launch must never break on a convenience */ }
+}
+
 async function activateProfile(id) {
   // v1.0.63 — a sibling's video must never keep playing into the next child's session, and
   // `bgPlay` is a PER-PROFILE answer: the new profile may not have it on at all. Torn down
@@ -8932,6 +9016,10 @@ async function activateProfile(id) {
   // v1.0.7: shares queued before a profile was active drain AFTER the gallery is up —
   // their interactive PIN flow must not fight the activation navigation.
   drainShareQueue().catch(() => {});
+
+  // v1.0.95 — the launch auto-resume, AFTER the share drain claims its turn (the hook also
+  // checks the queue itself, and re-checks the screen after every await).
+  maybeBootResume().catch(() => {});
 
   // Background: pull the family's shared state, then sync the sheet — one pipeline,
   // started by the line above. Never blocks the grid; re-renders when either one lands
@@ -9516,7 +9604,9 @@ function wire() {
       msg.textContent = 'גיבוי מלא הועתק ללוח (שמרו אותו בקובץ)'; msg.className = 'form-msg ok';
     } catch { msg.textContent = 'הייצוא נכשל'; msg.className = 'form-msg err'; }
   });
-  $('import-btn').addEventListener('click', () => $('import-file').click());
+  // v1.0.95: the system file picker is another activity — flag the deliberate departure
+  // or the TV kiosk watchdog yanks the parent back out of it.
+  $('import-btn').addEventListener('click', () => { allowLeave().catch(() => {}); $('import-file').click(); });
   $('import-file').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
     const msg = $('backup-msg');
@@ -9541,7 +9631,7 @@ function wire() {
   // v1.0.93 — "📋 העתקת הרשימה" replaces the hidden "📨 שליחה כטקסט" fallback, which opened
   // a share sheet and reported it had even where Android refused to show one.
   $('links-copy').addEventListener('click', () => { linksCopy().catch(() => linksMsg('ההעתקה נכשלה — נסו שוב', 'err')); });
-  $('links-import').addEventListener('click', () => $('links-file').click());
+  $('links-import').addEventListener('click', () => { allowLeave().catch(() => {}); $('links-file').click(); }); // v1.0.95: the picker is a deliberate departure
   $('links-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     e.target.value = ''; // reset first: re-picking the same file must re-fire `change`
@@ -9589,6 +9679,18 @@ function wire() {
     msg.textContent = e.target.checked
       ? 'המשך צפייה הופעל ✅ — סרטון שנעצר ייפתח מאותה נקודה'
       : 'המשך צפייה כובה — כל סרטון מתחיל מההתחלה';
+    msg.className = 'form-msg ok';
+  });
+  // v1.0.95: boot resume — per-profile and synced; the stop point itself is device-local
+  // (the v1.0.32 split). The cache is what the write gates and the launch hook read.
+  $('boot-resume-toggle').addEventListener('change', async (e) => {
+    await putSetting(activeProfileId, 'bootResume', e.target.checked);
+    bootResumeEnabled = e.target.checked;
+    maybeSchedulePush();
+    const msg = $('settings-msg');
+    msg.textContent = e.target.checked
+      ? 'המשך ניגון בכניסה הופעל ✅ — בפתיחת האפליקציה הסרטון האחרון יימשך מנקודת העצירה'
+      : 'המשך ניגון בכניסה כובה — פתיחת האפליקציה נוחתת במסך הבית';
     msg.className = 'form-msg ok';
   });
   // v1.0.86: open-in-fullscreen — per-profile and SYNCED. The cache is what openWatch reads
@@ -9727,6 +9829,7 @@ function wire() {
     const on = e.target.checked;
     await putSetting(activeProfileId, 'exitLock', on);
     maybeSchedulePush(); // it travels now — the other device must hear about it
+    setKioskGuard(on === true).catch(() => {}); // v1.0.95: the TV key guard follows the SETTING
     const { lockTask, unlockTask, isNative } = await import('./platform.js');
     let note = on ? 'נעילת היציאה הופעלה ✅' : 'נעילת היציאה כובתה';
     if (on) {
@@ -10001,6 +10104,7 @@ async function init() {
     if (await exitLockOn(await prefGet('activeProfile'))) {
       const { lockTask } = await import('./platform.js');
       lockTask().catch(() => {});
+      setKioskGuard(true).catch(() => {}); // v1.0.95: arm the TV key guard for the same window
     }
     await applyExitLockUi();
   } catch {}

@@ -321,6 +321,146 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.0.95 — **המשך ניגון בעת כניסה: THE LAST VIDEO RESUMES ON LAUNCH** (user request:
+  "בעת כניסה לאפליקציה ולאחר טעינת הפרופיל הרצוי, הסרטון האחרון שנוגן יתחיל להתנגן מהנקודה
+  שממנה עצרנו"), **opt-in, per profile, SYNCED, OFF unless a parent turns it on** —
+  `bootResume`, the bgPlay shape. `SAFE_ON_TIE: false` and the entry is LOAD-BEARING (the
+  generic string fallback answers true on a boolean tie — pinned non-vacuously, unlike
+  openFullscreen's).
+  - **"ENTRY" MEANS THE LAUNCH, ONCE PER PROCESS** (user decision 2026-11-03): the first
+    profile activation of the process — a boot that waits on the picker included — never a
+    mid-session profile switch, and never a return from the background (the v1.0.32 pause
+    already holds the video there; auto-playing every background return is the
+    pocket-at-night bug class v1.0.57 named).
+  - **A FINISHED LAST VIDEO PLAYS NOTHING** (user decision 2026-11-03, the sharper of the
+    two options): the flag RESUMES AN INTERRUPTION — it does not pick what to watch. The
+    candidate is THE most recently touched video (`plan.bootResumeTarget`, pure: sorted by
+    `max(playedAt, posAt)` — posAt is the fresher stamp and the only one a 🕒-off family
+    had; playedAt is what keeps a video watched to the END ranked first so the answer is an
+    honest nothing rather than a stale earlier video). Only DELETED records are walked past
+    (bounded — `BOOT_RESUME_SCAN_MAX` findLiveByKey reads, the v1.0.58 loop rule); the
+    first live record decides via `resumeStartAt({enabled:true})`, and 0 ⇒ silence.
+  - ⚠️ **THE FLAG STANDS ALONE, WHICH COST FOUR GATE WIDENINGS** — the measured blind spot:
+    without `resume` on, no stop point is ever SAVED, and without `recentLimit > 0` no
+    `playedAt` is ever stamped, so the feature would have shipped dead for most families.
+    `saveWatchPosition`, `onVideoFinished`'s ended-clear, its `finishMini` twin, and
+    `stampWatched`'s gate all widened to `resumeEnabled || bootResumeEnabled`; the READ side
+    widened only for the boot open (`openWatch(item, { bootResume })` → `resumeStartAt`
+    enabled by either) — tile taps, the autoplay chain and pipSkip keep today's behaviour
+    exactly, and the tile progress bar stays gated on `resume` alone. **The flag must be
+    spelled `bootResumeEnabled`**: the v1.0.57 guard bans the lowercase substring
+    `resumeEnabled` inside `stampWatched`, and the capital R is what clears it.
+  - **EVERY REFUSAL ERRS TOWARD SILENCE** (`maybeBootResume`, total, in `activateProfile`
+    after the share drain): a queued share, an open modal or PIN (the update prompt can land
+    first — it re-offers on the next home entry, v1.0.7), a due/locked scheduled break, a
+    sites/site containment, a folder lock whose candidate sits OUTSIDE it
+    (`folderWithinLock` on the record), and a wrapped gift (belt — a stamp implies
+    unwrapped). The screen is RE-CHECKED after every await (the logoTarget rule).
+  - ⚠️ **NO USER ACTIVATION ON A COLD START ⇒ NO FULLSCREEN**: the request inside openWatch
+    is refused by the platform and the video opens in the ordinary docked player (⛶ still
+    enlarges; the settings hint says so). On DEVICE the audio does start (Capacitor disables
+    the media-gesture requirement); in a desktop browser autoplay is blocked — verified with
+    a stubbed engine, and **real cold-start sound is a DEVICE checklist item**.
+  - 2 unit tests (`bootResumeTarget`: ordering incl. the finished-first case, Map+object,
+    totality) + the settings tie (both orders) + an on-the-wire per-profile merge twin
+    (gdrive) + 1 invariants guard (the v1.0.86 toggle template with inverted defaults, the
+    four widened gates, the read-side opt, the hook's every refusal, the once-per-process
+    latch, the bounded walk). The v1.0.25 `cancelAutoplay` guard was reshaped from a
+    600-char window to the real anchor (the call before `enterPlayerFullscreen` — the window
+    broke on CORRECT code when the signature grew, the exact TESTING.md trap). **Every
+    guard proven red on a planted regression (13 plants).** Browser-verified end to end
+    (20 checks with phases A–F): flag-off noop; a cold open landing on the LAST video at
+    stop-point minus the 3s rewind (57 of 60), windowed; a finished last video playing
+    NOTHING; a deleted newest candidate walked past to the next live one (87); and the real
+    toggle through the real PIN gate — owner label, both messages, the synced value.
+
+- v1.0.95 — **THE TV REMOTE'S APP BUTTONS STOP WALKING A CHILD OUT OF THE KIOSK** (field
+  report: "המשתמש יכול ללחוץ בשלט על כפתור קיצור דרך של youtube או netflix … והאפליקציה
+  שלנו עוברת לאפליקציה שהמשתמש לחץ ללא סיסמא"). With `exitLock` on, those buttons bypassed
+  the lock entirely — **because on most TV devices the OS screen pinning the kiosk rides
+  never engages at all** (no pinning support in TV settings; `startLockTask()` fails
+  silently), and some firmwares launch the target app below Android.
+  - **THE PLATFORM REALITY, measured in community data before designing**: the buttons send
+    DIFFERENT keycodes per vendor (Netflix 181/190/191/193/199; YouTube 190 on Xiaomi; one
+    Sony code shared by several apps), some arrive as ordinary KeyEvents to the focused
+    app, some are intercepted by the system BEFORE dispatch, and some never reach Android
+    at all. No single mechanism covers every TV — so this is TWO best-effort layers, and
+    the honest bound is stated rather than papered over.
+  - **LAYER 1 — `dispatchKeyEvent` SWALLOWS BY WHITELIST** (MainActivity, both copies):
+    when the guard is armed, every key that is not D-pad/OK, BACK, a key that TYPES a
+    character (`getUnicodeChar() != 0` — the PIN digits and the parent's text fields,
+    whatever the vendor's keycode), a media key (the MediaSession owns those, v1.0.88/92)
+    or VOLUME (always passed to the system) is CONSUMED — which blocks remotes whose app
+    buttons dispatch to the app, and starves the system's unhandled-key fallback that
+    launches apps for unconsumed shortcut keys. **The whitelist fails CLOSED**: an unknown
+    OEM code is swallowed, never passed.
+  - **LAYER 2 — THE RE-FRONT WATCHDOG** (`maybeReclaimForeground`, MainActivity.onStop
+    AFTER `super` — the v1.0.76 PiP order pin): losing the foreground with the guard armed,
+    not finishing, not entering PiP, and no legitimate departure flagged in the last 15s ⇒
+    `moveTaskToFront` (+ one retry at 500ms; `REORDER_TASKS`, a NORMAL install-time
+    permission — the manifest comment went FIVE→SIX, both copies). This catches
+    firmware-level launches the key filter never sees. **Every deliberate way out flags
+    itself** (`noteLegitLeave()`): openUrl, exitApp, shareText, shareFile,
+    openInstallPermissionSettings, startInstaller, deviceAuth, `GoogleAuthPlugin.authorize`
+    (the Play Services consent is its own activity — GoogleAuthPlugin **joined the
+    byte-parity set** with this, the one java file that had no pair assert), and a JS
+    `allowLeave` door for the two system FILE PICKERS, which open through a DOM input and
+    cross no native method.
+  - **THE GUARD IS ARMED BY THE SETTING, NEVER THE PIN STATE** (`setKioskGuard`, the
+    setPipState static-push shape, `kioskGuardOn && isTvStatic`): on a TV the pin state is
+    exactly what cannot be trusted. Pushed from `applyExitLock` (so activation, the resume
+    re-arm and every caller re-push for free — and the push line must never contain the
+    substring `unlockTask`, the v1.0.36 RAW-body guard), the settings toggle, and the boot
+    arm (the launch-to-profile window, the v1.0.25 rule). **TV-only by construction** —
+    a tablet with a Bluetooth keyboard keeps every key.
+  - ⚠️ **KNOWN BOUNDS, stated in the release notes**: a firmware that handles the button
+    below Android delivers no key event (layer 1 blind), and Android 12+ background-launch
+    enforcement may refuse the re-front (layer 2 best-effort) — on such a device the target
+    app opens and the child is pulled back only if the OS allows it. If the user's own TV
+    still leaks, the next step is an AccessibilityService with system-wide key filtering
+    (the remapper-app mechanism; needs a one-time manual enable in the TV's accessibility
+    settings) — deliberately NOT shipped now (user decision 2026-11-03: layered first).
+    **The real behaviour is a DEVICE checklist item on the family's own TV** — no test can
+    press a remote's Netflix button.
+  - **PURE-JAVA CORE, NO NODE TEST CAN EXECUTE IT** — so 1 invariants guard over BOTH java
+    copies (comment-stripped, javaMethodBody-anchored): the push door and its OFF default,
+    the TV requirement, the whitelist's every family AND its fail-closed tail, the
+    watchdog's four gates, `noteLegitLeave` in all seven plugin exits + authorize +
+    allowLeave, `REORDER_TASKS` in both manifests, and the three JS push sites + both
+    picker flags. Java syntax proven clean (javac parse — zero syntax errors; the full
+    compile gate is the release build, the v1.0.88 rule). **Every assertion proven red on a
+    planted regression (11 plants, incl. the fail-open whitelist, a guard defaulting ON,
+    the watchdog above super.onStop, and a single dropped departure flag).**
+
+- v1.0.95 — **"סרטוני יוטיוב לא מורשים / bot" — WHY IT HAPPENS, AND WHY THE GOOGLE ACCOUNT
+  CANNOT BE PASSED TO THE EMBED** (user question; recorded so nobody re-opens this — the
+  v1.0.65 rule. **No code changed**, user decision 2026-11-03).
+  - **THE ERROR IS YOUTUBE'S OWN ANTI-BOT GATE drawn INSIDE the iframe** ("sign in to
+    confirm you're not a bot" class), raised against anonymous embeds. This app's embed is
+    the perfect "suspicious guest": `youtube-nocookie.com` (keeps NO cookies — its whole
+    point), a WebView whose third-party cookies are off (the Android default; nothing in
+    MainActivity enables them), origin `https://localhost`, a stock `; wv` user agent. The
+    actual trigger is usually the NETWORK's IP/ASN reputation — which is why it self-heals
+    in days, and why nothing in the app can prevent it. It mostly raises NO `onError`
+    (the gate is iframe UI, not a player error), so it cannot even be detected reliably.
+  - **PASSING THE PARENT'S GOOGLE ACCOUNT IS IMPOSSIBLE, three hard walls** (measured in
+    code, not policy preference): (1) the app holds a `drive.file` access token ONLY —
+    `GoogleAuthPlugin` returns `{granted, accessToken}`, no email/id-token/identity, and an
+    OAuth token is not a YouTube session and has no API that could sign an iframe in;
+    (2) embed identity = google.com session COOKIES in the WebView, and Google BLOCKS
+    account sign-in inside app WebViews (`disallowed_useragent` — documented in gauth.js
+    since v1.0.19); (3) even if it worked, the CHILD's viewing would be written into the
+    parent's YouTube history and recommendations — a safety negative, not a feature. So the
+    user's own fallback clause ("אם לא הזדהה — נמשיך כמו היום") is simply the behaviour for
+    everyone.
+  - **WHY NOT THE COOKIE MITIGATION** (switch to `www.youtube.com` + enable third-party
+    cookies so a visitor cookie builds reputation): community evidence is CONTRADICTORY
+    (reports of the gate appearing on each domain and clearing on the other), the change
+    touches the PUBLIC privacy policy that Google's OAuth verification points at
+    (nocookie is named in docs/privacy.html), and it grazes the safety-adjacent
+    youtube.com navigation swallow in MainActivity. A real cost for an unproven win —
+    declined with the user, and this entry is what keeps the question answered.
+
 - v1.0.94 — **A FOLDER OF SONGS VANISHED FROM THE CHILD'S HOME, AND IT WAS NEVER IN THE
   BACKUP** (field report 2026-10-05: "התיקיה נעלמה מהמסך הראשי ומהחיפוש, אבל במסך ההורים אני
   רואה אותה" — no app update, another device on the same account). Full record:

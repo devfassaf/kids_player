@@ -119,7 +119,12 @@ const SAFE_ON_TIE = {
   // (The generic string fallback below happens to answer true for a boolean tie as well —
   // 't' > 'f' — but that is a lexicographic accident, not a decision; this entry is the
   // decision, and the invariants suite pins its presence.)
-  openFullscreen: true
+  openFullscreen: true,
+  // v1.0.95: auto-play the last video on app entry. FALSE on a tie — the bgPlay asymmetry
+  // verbatim: a tie that answers "off" costs a parent one tap, a tie that answers "on"
+  // starts SOUND on a launch nobody asked to play, and this entry is load-bearing (the
+  // string fallback's 't' > 'f' would answer true without it).
+  bootResume: false
 };
 
 /**

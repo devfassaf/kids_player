@@ -1990,6 +1990,43 @@ test('recentKeys order is the OPPOSITE of favouriteKeys, deliberately', async ()
   assert.deepEqual(recentKeys(states, 5), ['new', 'old']);
 });
 
+test('bootResumeTarget: most recently TOUCHED first — max(playedAt, posAt) (v1.0.95)', async () => {
+  const { bootResumeTarget } = await import('../www/js/plan.js');
+  // posAt is banked every few seconds WHILE playing, so it can be fresher than the
+  // once-per-opening playedAt — and it is the only stamp a 🕒-off family had before
+  // v1.0.95. Either stamp alone must rank a row; the MAX of the two orders them.
+  const states = new Map([
+    ['a', { playedAt: 300 }],                 // watched, position since cleared (ended)
+    ['b', { posAt: 500, posSec: 40, durSec: 300 }], // 🕒 was off — position only
+    ['c', { playedAt: 100, posAt: 400 }],     // both — the fresher posAt ranks it
+    ['d', { favAt: 900 }],                    // starred but never watched — no stamp
+    ['e', { playedAt: 0, posAt: 0 }],         // explicit zeros are not a touch
+    ['f', { playedAt: 'junk', posAt: 'junk' }]
+  ]);
+  assert.deepEqual(bootResumeTarget(states), ['b', 'c', 'a']);
+  // a Map and a plain object alike — giftStates is a Map, and reading it with
+  // Object.entries is precisely how v1.0.39 shipped a silent no-op
+  assert.deepEqual(bootResumeTarget({ a: { playedAt: 1 }, b: { posAt: 2 } }), ['b', 'a']);
+  // TOTAL: junk input answers [], never a thrown launch
+  assert.deepEqual(bootResumeTarget(null), []);
+  assert.deepEqual(bootResumeTarget(undefined), []);
+  assert.deepEqual(bootResumeTarget('junk'), []);
+  assert.deepEqual(bootResumeTarget(new Map([['x', null], ['', { playedAt: 5 }]])), []);
+});
+
+test('bootResumeTarget ranks a FINISHED video by its watch stamp, not by a vanished position', async () => {
+  const { bootResumeTarget } = await import('../www/js/plan.js');
+  // A video watched to the END clears posSec/posAt but keeps playedAt. It must still rank
+  // FIRST when it is the latest touch: the caller then finds no usable stop point and
+  // honestly plays NOTHING (user decision 2026-11-03) — offering the OLDER video instead
+  // would be the chain picking what to watch, which this feature deliberately is not.
+  const states = new Map([
+    ['finished', { playedAt: 900 }],
+    ['earlier', { playedAt: 100, posAt: 200, posSec: 60, durSec: 300 }]
+  ]);
+  assert.deepEqual(bootResumeTarget(states), ['finished', 'earlier']);
+});
+
 test('protectedWindowKeys: 🕒 members are protected from the rolling window (v1.0.57)', async () => {
   const { protectedWindowKeys } = await import('../www/js/plan.js');
   // The user's decision 2026-08-30, and it repairs the documented weakness of v1.0.39:

@@ -1030,8 +1030,15 @@ test('continuous play routes through planAutoplay, and onExit says WHY (v1.0.25)
   // A chain must not survive the child leaving, and a tap must beat the queued video.
   assert.match(app, /resetAutoplayChain\(\); \/\/ a queued next video must never follow/,
     'leaving the watch view no longer cancels a pending countdown');
+  // v1.0.95 reshape: this was `ow.slice(0, 600)` — a char window, and the openWatch
+  // signature growing (the bootResume opts) pushed the call past it on CORRECT code (the
+  // exact trap TESTING.md names). The real invariant is the ORDER openWatch's own comment
+  // states: the cancel is synchronous and BEFORE the fullscreen request — so anchor there.
   const ow = app.slice(app.indexOf('async function openWatch('));
-  assert.match(ow.slice(0, 600), /cancelAutoplay\(\)/, 'opening a video does not cancel the countdown');
+  const owHead = ow.slice(0, ow.indexOf('enterPlayerFullscreen()'));
+  assert.ok(owHead.length > 0, 'lost the openWatch → enterPlayerFullscreen anchor');
+  assert.match(owHead, /cancelAutoplay\(\)/,
+    'opening a video does not cancel the countdown before the fullscreen request');
 });
 
 test('the chain SKIPS wrapped gifts through autoplayNextTarget, and the backstop stays (v1.0.89)', () => {
@@ -2803,6 +2810,88 @@ test('the open-in-fullscreen setting is wired end to end (v1.0.86)', () => {
     'the markup default is no longer CHECKED — the screen would lie about an unwritten setting');
 });
 
+test('boot resume is wired end to end, and NOTHING plays without a usable stop point (v1.0.95)', () => {
+  // Per-profile, SYNCED, OFF unless written — and the whole feature is app.js wiring no
+  // node test can execute, so this pins it the way the v1.0.86 guard above pins its
+  // sibling. Comment-stripped source throughout.
+  const app = CODE.get('www/js/app.js');
+
+  // 1) the toggle template, inverted defaults: cache rides loadGiftStates with `=== true`
+  //    and a FAILED read falls back to OFF — an unreadable store must never start sound
+  const load = fnSlice(app, 'async function loadGiftStates()');
+  assert.match(load, /bootResumeEnabled = \(await getSetting\(activeProfileId, 'bootResume', false\)\) === true/,
+    'loadGiftStates no longer refreshes the cached flag, or reads it with the wrong default');
+  assert.match(load, /catch \{ bootResumeEnabled = false; \}/,
+    'a failed settings read no longer falls back to OFF — a junk store could start sound');
+  const handler = handlerBody(app, "$('boot-resume-toggle').addEventListener('change'");
+  assert.ok(handler, 'the boot-resume toggle handler is gone');
+  assert.match(handler, /putSetting\(activeProfileId, 'bootResume', e\.target\.checked\)/,
+    'the toggle no longer writes the synced setting');
+  assert.match(handler, /bootResumeEnabled = e\.target\.checked/,
+    'the toggle no longer updates the cache the write gates and the launch hook read');
+  assert.match(handler, /maybeSchedulePush\(\)/, 'the change never reaches the other devices');
+  assert.match(app, /\$\('boot-resume-toggle'\)\.checked = \(await getSetting\(activeProfileId, 'bootResume', false\)\) === true/,
+    'refreshParent no longer loads the toggle, or loads it with the wrong default');
+  assert.match(CODE.get('www/js/settings.js'), /bootResume: false/,
+    'the SAFE_ON_TIE entry is gone — the string fallback answers TRUE on a tie, i.e. sound');
+  assert.match(app, /'boot-resume-owner'/,
+    'the owner label is not filled — the row reads as a device switch instead of a per-child one');
+  const html2 = readFileSync(join(ROOT, 'www', 'index.html'), 'utf8');
+  assert.match(html2, /id="boot-resume-toggle" type="checkbox" \/>/,
+    'the markup default is no longer UNCHECKED — the screen would lie about an unwritten setting');
+
+  // 2) THE FOUR WIDENED WRITE GATES — the flag must work WITHOUT 'resume'/🕒 being on,
+  //    or it plays nothing forever (the blind spot this feature was designed around):
+  //    positions bank, a finished video clears its point (both players), and the watch
+  //    stamp lands even when 🕒 is off.
+  const save = fnSlice(app, 'function saveWatchPosition(');
+  assert.match(save, /if \(!\(resumeEnabled \|\| bootResumeEnabled\) \|\| !item/,
+    'saveWatchPosition narrowed back to the resume setting — bootResume has no stop point to resume');
+  const ovf = fnSlice(app, 'async function onVideoFinished(');
+  assert.match(ovf, /reason === 'ended' && \(resumeEnabled \|\| bootResumeEnabled\)/,
+    'a finished video keeps a stale stop point — boot would reopen a video that ENDED');
+  const fm = fnSlice(app, 'function finishMini(');
+  assert.match(fm, /if \(resumeEnabled \|\| bootResumeEnabled\) clearWatchPosition\(item\)/,
+    'the mini-player twin of the ended-clear narrowed back — a floated finish leaves a stale point');
+  const stamp = fnSlice(app, 'function stampWatched(');
+  assert.match(stamp, /recentLimit <= 0 && !bootResumeEnabled/,
+    'stampWatched refuses to stamp when 🕒 is off — "the last video" has nowhere to live');
+
+  // 3) the read side: ONLY the boot open resumes regardless of the per-video setting —
+  //    ordinary opens keep today's behaviour exactly
+  const ow = fnSlice(app, 'async function openWatch(item, { bootResume = false } = {})');
+  assert.match(ow, /enabled: resumeEnabled \|\| bootResume,/,
+    'the boot open no longer lands at the stop point (or every open started resuming)');
+
+  // 4) the launch hook: once per process, AFTER the share drain, walking the pure order
+  //    under a BOUNDED number of reads, and refusing every surface that is not a quiet home
+  const act = fnSlice(app, 'async function activateProfile(');
+  const drainAt = act.indexOf('drainShareQueue()');
+  const hookAt = act.indexOf('maybeBootResume()');
+  assert.ok(drainAt >= 0 && hookAt > drainAt,
+    'activateProfile no longer fires the launch hook after the share drain');
+  const hook = fnSlice(app, 'async function maybeBootResume()');
+  assert.match(hook, /if \(bootResumeFired\) return;/, 'the once-per-process latch is gone — a mid-session profile switch would auto-play');
+  assert.match(hook, /hasQueuedShares/, 'a queued share no longer silences the launch — its PIN flow would fight the video');
+  assert.match(hook, /isModalOpen\(\) \|\| nav\.isActive\('pin'\)/, 'a modal/PIN on screen no longer silences the hook');
+  assert.match(hook, /lock\.phase === 'locked' \|\| lock\.phase === 'due'/,
+    'a scheduled break no longer silences the hook — sound would start behind the lock screen');
+  assert.match(hook, /containState\.mode === 'sites' \|\| containState\.mode === 'site'/,
+    'a site containment no longer silences the hook');
+  assert.match(hook, /folderWithinLock\(rec\.homeFolderId \|\| rec\.folderId, containState\.folderId, customFolderRows\)/,
+    'a folder lock no longer bounds the candidate — a video from OUTSIDE the lock would open');
+  assert.match(hook, /bootResumeTarget\(giftStates\)\.slice\(0, BOOT_RESUME_SCAN_MAX\)/,
+    'the walk is unbounded, or stopped routing through the pure order');
+  assert.match(hook, /st\.giftRank && !st\.unwrappedAt\) return/,
+    'a wrapped gift could be auto-opened — the pipSkipTarget rule, belt included');
+  assert.match(hook, /resumeStartAt\(\{ enabled: true/,
+    'the stop-point decision is gone — boot would depend on the per-video resume setting');
+  assert.match(hook, /if \(!\(startAt > 0\)\) return;/,
+    "a video with no usable stop point no longer plays NOTHING — the user's explicit decision");
+  assert.match(hook, /openWatch\(rec, \{ bootResume: true \}\)/,
+    'the open lost its bootResume opt — it would start from 0 instead of the stop point');
+});
+
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
   // Same rule the guide slides follow: an asset named in code must EXIST in www/, or the
   // child gets an empty circle where their folder should be. And it must be self-contained
@@ -3193,10 +3282,110 @@ test('the native pair is byte-identical (v1.0.45)', () => {
   for (const [a, b] of [
     ['android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java', 'native-reference/KidsWebPlugin.java'],
     ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java', 'native-reference/MainActivity.java'],
+    // v1.0.95: GoogleAuthPlugin joined when the TV kiosk guard stamped noteLegitLeave()
+    // into authorize() — until then it was the ONE java file with no parity assert.
+    ['android/app/src/main/java/com/assaf/kidsplayer/GoogleAuthPlugin.java', 'native-reference/GoogleAuthPlugin.java'],
     ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']
   ]) {
     assert.equal(readRepo(a), readRepo(b), `${a} and ${b} have drifted — disaster recovery would ship the wrong app`);
   }
+});
+
+test('the TV kiosk key guard is armed by the SETTING, swallows by whitelist, and reclaims the foreground (v1.0.95)', () => {
+  // With the exit lock on, a TV remote's app-shortcut buttons (YouTube/Netflix) walked the
+  // child straight out of the app: most TVs have no screen-pinning support, so the OS pin
+  // silently never engages there. Two best-effort layers, both java-side — nothing here is
+  // executable by node, so the WIRING is the invariant. Comment-stripped source throughout
+  // (the guard-fired-on-its-own-comment trap, five times now).
+  const files = [
+    'android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+    'native-reference/KidsNativePlugin.java'
+  ];
+  for (const f of files) {
+    const code = stripComments(readRepo(f));
+    // the arming: JS pushes the SETTING (setPipState shape), and TV is checked statically
+    assert.match(code, /public void setKioskGuard\(PluginCall call\)/, `${f}: the JS push door is gone`);
+    assert.match(code, /kioskGuardOn = Boolean\.TRUE\.equals\(call\.getBoolean\("on", false\)\)/,
+      `${f}: the guard no longer follows the pushed setting (or defaults ON)`);
+    assert.match(code, /static boolean keyGuardArmed\(Context ctx\) \{ return kioskGuardOn && isTvStatic\(ctx\); \}/,
+      `${f}: the guard stopped requiring BOTH the setting and a TV — a tablet keyboard would go dead`);
+    // the whitelist: what the app and the system NEED keeps flowing…
+    const allow = javaMethodBody(code, code.indexOf('static boolean keyAllowedUnderGuard('));
+    assert.match(allow, /KEYCODE_DPAD_UP[\s\S]*?KEYCODE_DPAD_CENTER/, `${f}: the D-pad went dead under the lock`);
+    assert.match(allow, /KEYCODE_BACK/, `${f}: BACK went dead under the lock`);
+    assert.match(allow, /KEYCODE_VOLUME_UP[\s\S]*?KEYCODE_VOLUME_DOWN/, `${f}: volume went dead under the lock`);
+    assert.match(allow, /KEYCODE_MEDIA_PLAY_PAUSE[\s\S]*?KEYCODE_MEDIA_FAST_FORWARD/,
+      `${f}: the media keys went dead — the headset features die under the lock`);
+    assert.match(allow, /getUnicodeChar\(\) != 0\) return true/,
+      `${f}: typing keys went dead — the PIN digits and the parent's text fields`);
+    // …and everything else is REFUSED: the method's last word must be false, or an unknown
+    // vendor shortcut key sails through (fail closed is the entire feature)
+    assert.match(allow.trim(), /return false;\s*\}$/, `${f}: the whitelist no longer fails CLOSED`);
+    // layer 2: the watchdog's own gates — PiP and a real finish are not escapes, and a
+    // flagged legitimate departure (share/installer/browser/consent/picker) is honored
+    const dog = javaMethodBody(code, code.indexOf('static void maybeReclaimForeground('));
+    assert.match(dog, /keyGuardArmed\(a\)/, `${f}: the watchdog no longer checks the guard`);
+    assert.match(dog, /isFinishing\(\)/, `${f}: a real exit would be yanked back`);
+    assert.match(dog, /isInPictureInPictureMode\(\)/, `${f}: entering PiP would be yanked back`);
+    assert.match(dog, /LEGIT_LEAVE_WINDOW_MS/, `${f}: a deliberate departure would be yanked back`);
+    assert.match(code, /moveTaskToFront\(a\.getTaskId\(\), 0\)/, `${f}: the reclaim itself is gone`);
+    // every deliberate way OUT flags itself — one missing flag = that door fights the watchdog
+    for (const method of ['openUrl', 'exitApp', 'shareText', 'shareFile',
+      'openInstallPermissionSettings', 'startInstaller', 'deviceAuth']) {
+      const at = code.indexOf(method + '(PluginCall call)') >= 0
+        ? code.indexOf(method + '(PluginCall call)') : code.indexOf(method + '(');
+      assert.ok(at >= 0, `${f}: lost the ${method} anchor`);
+      assert.match(javaMethodBody(code, at), /noteLegitLeave\(\)/,
+        `${f}: ${method} no longer flags its departure — the watchdog yanks the user back from it`);
+    }
+    assert.match(code, /public void allowLeave\(PluginCall call\) \{ noteLegitLeave\(\); call\.resolve\(\); \}/,
+      `${f}: the JS-side departure door (the file pickers) is gone`);
+  }
+  // MainActivity: layer 1 consumes BEFORE super (and so before the WebView and the system
+  // unhandled-key fallback), and layer 2 runs in onStop AFTER the pinned PiP bookkeeping
+  for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java',
+    'native-reference/MainActivity.java']) {
+    const code = stripComments(readRepo(f));
+    const dke = javaMethodBody(code, code.indexOf('public boolean dispatchKeyEvent('));
+    assert.match(dke, /keyGuardArmed\(this\)[\s\S]*?!KidsNativePlugin\.keyAllowedUnderGuard\(event\)/,
+      `${f}: dispatchKeyEvent no longer swallows by the armed whitelist`);
+    assert.match(dke, /return true;/, `${f}: a blocked key is no longer CONSUMED — the fallback still launches the app`);
+    assert.match(dke, /return super\.dispatchKeyEvent\(event\);/, `${f}: allowed keys no longer reach the app at all`);
+    const stopAt = code.indexOf('public void onStop()');
+    const stopBody = javaMethodBody(code, stopAt);
+    const superAt = stopBody.indexOf('super.onStop()');
+    const reclaimAt = stopBody.indexOf('maybeReclaimForeground(this)');
+    assert.ok(superAt >= 0 && reclaimAt > superAt,
+      `${f}: the watchdog left onStop, or moved above super.onStop() (the v1.0.76 PiP order pin)`);
+  }
+  // GoogleAuthPlugin: the Play Services consent is its own activity — it must flag itself
+  for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/GoogleAuthPlugin.java',
+    'native-reference/GoogleAuthPlugin.java']) {
+    const code = stripComments(readRepo(f));
+    const auth = javaMethodBody(code, code.indexOf('public void authorize(PluginCall call)'));
+    assert.match(auth, /KidsNativePlugin\.noteLegitLeave\(\)/,
+      `${f}: the consent UI no longer flags its departure — the watchdog yanks the parent out of it`);
+  }
+  // the permission layer 2 needs, in BOTH manifests — a normal install-time permission
+  for (const f of ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']) {
+    assert.match(readRepo(f), /android\.permission\.REORDER_TASKS/,
+      `${f}: REORDER_TASKS is gone — moveTaskToFront is refused and layer 2 is dead`);
+  }
+  // the JS half: the push rides applyExitLock (so activation/resume/boot all re-push),
+  // the settings toggle, and the boot arm; the file pickers flag their departure
+  const app = CODE.get('www/js/app.js');
+  const ael = app.slice(app.indexOf('async function applyExitLock()'), app.indexOf('\n}', app.indexOf('async function applyExitLock()')));
+  assert.match(ael, /setKioskGuard\(on === true\)/,
+    'applyExitLock no longer pushes the setting — the guard never arms on a TV');
+  const toggle = handlerBody(app, "$('exit-lock-toggle').addEventListener('change'");
+  assert.match(toggle, /setKioskGuard\(on === true\)/,
+    'the settings toggle no longer pushes — flipping the lock would not reach the key guard until re-activation');
+  assert.match(app, /lockTask\(\)\.catch\(\(\) => \{\}\);\s*\n\s*setKioskGuard\(true\)\.catch/,
+    'the boot arm no longer pushes — the launch-to-profile window is unguarded on TV');
+  assert.match(app, /allowLeave\(\)\.catch\(\(\) => \{\}\); \$\('import-file'\)\.click\(\)/,
+    'the snapshot picker no longer flags its departure');
+  assert.match(app, /allowLeave\(\)\.catch\(\(\) => \{\}\); \$\('links-file'\)\.click\(\)/,
+    'the links picker no longer flags its departure');
 });
 
 /* ---- v1.0.45 review findings, each pinned so it cannot come back ---- */

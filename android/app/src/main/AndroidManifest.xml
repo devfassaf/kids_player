@@ -62,14 +62,15 @@
             android:foregroundServiceType="mediaPlayback" />
     </application>
 
-    <!-- Permissions: FIVE DECLARED HERE since v1.0.63, and the three new ones all belong
-         to ONE opt-in feature (keep playing with the screen off). Before it there were
-         exactly two, and that is still what a family who never enables the setting
-         effectively uses. Still no WAKE_LOCK (F7 uses a window flag), no storage
-         (app-scoped dirs only), no WRITE_SETTINGS, no READ_PHONE_STATE (v1.0.57 reads the
-         audio MODE instead).
+    <!-- Permissions: SIX DECLARED HERE since v1.0.95. Three (v1.0.63) belong to ONE opt-in
+         feature (keep playing with the screen off), and REORDER_TASKS (v1.0.95) to another —
+         the TV kiosk key guard's re-front watchdog; it is a NORMAL install-time permission,
+         no prompt. Before v1.0.63 there were exactly two, and that is still what a family
+         who never enables either setting effectively uses. Still no WAKE_LOCK (F7 uses a
+         window flag), no storage (app-scoped dirs only), no WRITE_SETTINGS, no
+         READ_PHONE_STATE (v1.0.57 reads the audio MODE instead).
 
-         ⚠️ THE SHIPPED APK SHOWS EIGHT, and that is not a mistake — measured on the real
+         ⚠️ THE SHIPPED APK SHOWS MORE, and that is not a mistake — measured on the real
          v1.0.63 build with `aapt2 dump badging`. Gradle merges library manifests in:
          USE_BIOMETRIC + USE_FINGERPRINT come from androidx.biometric (the v1.0.26 PIN
          recovery), and DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION is Capacitor's own. Count
@@ -85,4 +86,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- v1.0.95: the TV kiosk key guard's layer 2 — with the exit lock on, a remote's
+         app-shortcut button that launched another app is pulled straight back by
+         moveTaskToFront. Normal (install-time) permission; no dialog, no runtime prompt. -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
 </manifest>

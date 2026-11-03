@@ -190,6 +190,13 @@ export const RECENT_MAX_LIMIT = 50;   // beyond this the folder stops being a sh
 // mistaken tap, or a two-second peek, must not evict something they actually watched from a
 // 10-slot folder. A video that ENDS counts regardless — a 6-second clip can never reach it.
 export const RECENT_MIN_PLAY_SEC = 10;
+// v1.0.95 — boot resume: how many of the most-recent candidates the launch walk may try to
+// resolve against the database before giving up. Each step is one findLiveByKey read, and a
+// long-lived profile can hold hundreds of stamped rows whose videos were since deleted —
+// an unbounded walk would turn the launch into a library sweep (the v1.0.58 Drive-walk rule:
+// bound the LOOP, not just the data). Ten covers every honest case: the ten most recently
+// touched videos all being deleted means there is nothing worth auto-resuming anyway.
+export const BOOT_RESUME_SCAN_MAX = 10;
 
 /* v1.0.39 — ROLLING WINDOW: keep only the newest N videos per channel.
    0 = OFF, and OFF IS THE DEFAULT. This is the only feature in the app that deletes the
