@@ -33,7 +33,8 @@ import { toast } from './ui/toast.js';
 import { planAutoplay, autoplayNextTarget, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
-  pipEligibility, pipSkipTarget, miniEligible, transportIntent, bootPlayNudge } from './playerlogic.js';
+  pipEligibility, pipSkipTarget, miniEligible, transportIntent, bootPlayNudge,
+  commandFresh } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -4056,7 +4057,20 @@ async function pipSkip(action) {
  * ⏭ seconds after the child left the video, a scheduled break can have taken the screen,
  * and starting a video then would be a surprise noise rather than a control.
  */
-async function handlePlaybackCommand(action) {
+// v1.0.97 — this page's birth stamp (module init runs once per page-life). The freshness
+// gate below compares every command's emit stamp against it: the retained channel outlives
+// a page, and a command born in a previous life may not act in this one.
+const pageBornAt = Date.now();
+
+async function handlePlaybackCommand(action, at) {
+  // v1.0.97 — a command born BEFORE this page may not act (pure commandFresh): after a
+  // minimize → swipe-kill, the service survived with an ACTIVE session (no onTaskRemoved —
+  // fixed in the same release), and a stop/pause dispatched to that zombie crossed into the
+  // NEXT launch over the retained channel. It landed here, got crowned a PERSON's pause by
+  // markUserToggle below, and stood the v1.0.96 boot nudge down — "נפתח אך לא מתנגן",
+  // deterministically. Dropped FIRST, before any verb, so a stale 'next'/'toggle' cannot act
+  // either; a retained tap delivered late IN THE SAME life (frozen WebView) still runs.
+  if (!commandFresh(at, pageBornAt)) return;
   // ⏮/⏭ are real TRACK skips (v1.0.76 decision). Routed BEFORE the gates below because they
   // must work for the PiP window AND — v1.0.84 — a Bluetooth headset/watch/car's own
   // next/previous buttons (the native session maps them to next/prev). pipSkip re-checks
@@ -10196,7 +10210,7 @@ async function init() {
   // v1.0.63 — ⏮/⏯/⏭ on the notification. Registered once, at boot, like every other native
   // listener: a command retained natively while the WebView was frozen is delivered as soon
   // as it thaws, so nothing is lost with the screen off.
-  onPlaybackCommand((action) => { handlePlaybackCommand(action).catch(() => {}); });
+  onPlaybackCommand((action, at) => { handlePlaybackCommand(action, at).catch(() => {}); });
 
   // v1.0.34 idle screen-off: every touch and every remote key is "someone is here".
   // CAPTURE phase, so a handler that stops propagation cannot hide input from the

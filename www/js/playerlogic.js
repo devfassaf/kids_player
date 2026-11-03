@@ -571,6 +571,32 @@ export function bootPlayNudge(state) {
   return 'stop';
 }
 
+/**
+ * v1.0.97 — PURE: may a playbackCommand act in THIS page-life? (field report: minimize →
+ * swipe-kill from recents → relaunch opened the boot-resumed video PAUSED, deterministically,
+ * with the media notification left STUCK — both user-confirmed. The service had no
+ * onTaskRemoved, so the swipe left a zombie process + ACTIVE session; a stop/pause dispatched
+ * to that session crossed into the next launch over the retained command channel, and the
+ * handler crowned it a PERSON's pause — standing the v1.0.96 nudge down BY DESIGN.)
+ *
+ * The rule is BIRTH, not age: a command stamped before this page was born belongs to a life
+ * that no longer exists. Deliberately NOT an age bound — the channel's design promise is
+ * that a tap retained while the WebView is frozen (screen off, bgPlay) is delivered minutes
+ * later IN THE SAME life, and an age bound would break exactly that.
+ *
+ * TOTAL, and the fail direction is FRESH (the status quo): a missing or junk stamp must
+ * read as a live button — a wrongly-dropped command is a dead button for a REAL person,
+ * while a wrongly-accepted one is a one-off ghost the next press corrects.
+ */
+export function commandFresh(at, pageAt) {
+  // typeof, not Number(): `Number(null) === 0` is the documented trap (plan.screenOffMinutes)
+  // — a null/''/boolean stamp would coerce to a FINITE ancient time and be dropped, i.e. a
+  // dead button, the exact fail direction this rule must avoid.
+  if (typeof at !== 'number' || !Number.isFinite(at)) return true;
+  if (typeof pageAt !== 'number' || !Number.isFinite(pageAt)) return true;
+  return at >= pageAt;
+}
+
 /* ---------------- interrupted by a call (v1.0.57) ---------------- */
 
 /** The audio modes that mean a call is happening, ringing included. */

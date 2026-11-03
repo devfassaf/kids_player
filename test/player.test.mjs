@@ -795,3 +795,28 @@ test('bootPlayNudge: kicks a mounted paused player, never a PERSON\'s pause, jun
   assert.equal(bootPlayNudge({}), 'stop');
   assert.equal(bootPlayNudge({ mounted: 'yes' }), 'stop', 'truthy junk is not true — only an explicit boolean answers');
 });
+
+/* ---------------- command freshness (v1.0.97) ---------------- */
+import { commandFresh } from '../www/js/playerlogic.js';
+
+test('commandFresh: a command born before THIS page never acts; junk reads as fresh (v1.0.97)', () => {
+  // the field report's exact case: a zombie session's pause, stamped in the previous life
+  assert.equal(commandFresh(1000, 2000), false);
+  // this life's commands act — including one stamped at the very birth millisecond
+  assert.equal(commandFresh(2000, 2000), true);
+  assert.equal(commandFresh(3000, 2000), true);
+  // TOTAL, failing toward the STATUS QUO (a live button): a wrongly-dropped command is a
+  // dead button for a REAL person; a wrongly-accepted one is a one-off ghost
+  assert.equal(commandFresh(undefined, 2000), true, 'a missing stamp must stay a live button');
+  assert.equal(commandFresh(NaN, 2000), true);
+  assert.equal(commandFresh('junk', 2000), true);
+  assert.equal(commandFresh(3000, undefined), true, 'a junk page stamp must not kill the channel');
+  assert.equal(commandFresh(3000, NaN), true);
+  // ⚠️ the Number(null)===0 trap (the plan.screenOffMinutes lesson): null/''/true COERCE to
+  // finite numbers — an ancient "0" that would read as stale, i.e. a dead button. typeof
+  // guards them back to "missing", which is fresh.
+  assert.equal(commandFresh(null, 2000), true, 'Number(null)===0 must not read as a stale stamp');
+  assert.equal(commandFresh('', 2000), true);
+  assert.equal(commandFresh(true, 2000), true);
+  assert.equal(commandFresh(3000, null), true);
+});

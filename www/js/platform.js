@@ -552,14 +552,18 @@ export async function stopBackgroundPlayback() {
   try { await kids.stopBackgroundPlayback(); return true; } catch { return false; }
 }
 
-/** A ⏮/⏯/⏭ tap on the notification. Retained natively, so a frozen WebView loses nothing. */
+/** A ⏮/⏯/⏭ tap on the notification. Retained natively, so a frozen WebView loses nothing.
+ *  v1.0.97: the EMIT STAMP (`at`, wall-clock ms) rides along to the handler — the retained
+ *  channel outlives a page-life, and a zombie session's 'pause' used to cross into the next
+ *  launch; the handler drops commands born before its own page, while a retained tap
+ *  delivered minutes later in the SAME life (frozen WebView, screen off) still runs. */
 export function onPlaybackCommand(fn) {
   const kids = plugin('KidsNative');
   if (!kids || !kids.addListener) return;
   try {
     kids.addListener('playbackCommand', (o) => {
       const a = o && typeof o.action === 'string' ? o.action : '';
-      if (a) { try { fn(a); } catch {} }
+      if (a) { try { fn(a, o && o.at); } catch {} }
     });
   } catch {}
 }
