@@ -127,6 +127,23 @@ public class MainActivity extends BridgeActivity {
         KidsNativePlugin.onPipModeChanged(this, isInPictureInPictureMode);
     }
 
+    /**
+     * v1.0.95 — TV kiosk key guard, layer 1. With the exit lock on, a remote's dedicated
+     * app buttons (YouTube/Netflix/Prime) must not walk the child out of the app: every key
+     * that is not on the whitelist (D-pad/OK, BACK, typing keys, media keys, volume) is
+     * consumed here, BEFORE the WebView and before the system's unhandled-key fallback —
+     * which is exactly the mechanism that launches apps for unconsumed shortcut keys on
+     * many TVs. The rule and the arming live in KidsNativePlugin (one file, both copies).
+     */
+    @Override
+    public boolean dispatchKeyEvent(android.view.KeyEvent event) {
+        if (KidsNativePlugin.keyGuardArmed(this)
+                && !KidsNativePlugin.keyAllowedUnderGuard(event)) {
+            return true; // swallowed — a locked child's shortcut key does nothing
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
     /** A PiP window dismissed with its X, or the screen turning off over it, lands here —
         with NO appStateChange (the activity already paused at PiP entry), so the plugin
         tells JS to bank the playhead and fall silent. */
@@ -134,6 +151,11 @@ public class MainActivity extends BridgeActivity {
     public void onStop() {
         KidsNativePlugin.onPipActivityStopped();
         super.onStop();
+        // v1.0.95 — TV kiosk key guard, layer 2: a firmware-launched app button never
+        // reaches dispatchKeyEvent, so losing the foreground with the guard armed and no
+        // legitimate departure flagged is the only signal left. AFTER super.onStop() —
+        // the PiP bookkeeping above is order-pinned to run first (the v1.0.76 guard).
+        KidsNativePlugin.maybeReclaimForeground(this);
     }
 
     // F12b share target. VERIFIED: BridgeActivity.load() ends with

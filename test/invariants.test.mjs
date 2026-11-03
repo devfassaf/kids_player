@@ -3282,10 +3282,110 @@ test('the native pair is byte-identical (v1.0.45)', () => {
   for (const [a, b] of [
     ['android/app/src/main/java/com/assaf/kidsplayer/KidsWebPlugin.java', 'native-reference/KidsWebPlugin.java'],
     ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java', 'native-reference/MainActivity.java'],
+    // v1.0.95: GoogleAuthPlugin joined when the TV kiosk guard stamped noteLegitLeave()
+    // into authorize() — until then it was the ONE java file with no parity assert.
+    ['android/app/src/main/java/com/assaf/kidsplayer/GoogleAuthPlugin.java', 'native-reference/GoogleAuthPlugin.java'],
     ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']
   ]) {
     assert.equal(readRepo(a), readRepo(b), `${a} and ${b} have drifted — disaster recovery would ship the wrong app`);
   }
+});
+
+test('the TV kiosk key guard is armed by the SETTING, swallows by whitelist, and reclaims the foreground (v1.0.95)', () => {
+  // With the exit lock on, a TV remote's app-shortcut buttons (YouTube/Netflix) walked the
+  // child straight out of the app: most TVs have no screen-pinning support, so the OS pin
+  // silently never engages there. Two best-effort layers, both java-side — nothing here is
+  // executable by node, so the WIRING is the invariant. Comment-stripped source throughout
+  // (the guard-fired-on-its-own-comment trap, five times now).
+  const files = [
+    'android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+    'native-reference/KidsNativePlugin.java'
+  ];
+  for (const f of files) {
+    const code = stripComments(readRepo(f));
+    // the arming: JS pushes the SETTING (setPipState shape), and TV is checked statically
+    assert.match(code, /public void setKioskGuard\(PluginCall call\)/, `${f}: the JS push door is gone`);
+    assert.match(code, /kioskGuardOn = Boolean\.TRUE\.equals\(call\.getBoolean\("on", false\)\)/,
+      `${f}: the guard no longer follows the pushed setting (or defaults ON)`);
+    assert.match(code, /static boolean keyGuardArmed\(Context ctx\) \{ return kioskGuardOn && isTvStatic\(ctx\); \}/,
+      `${f}: the guard stopped requiring BOTH the setting and a TV — a tablet keyboard would go dead`);
+    // the whitelist: what the app and the system NEED keeps flowing…
+    const allow = javaMethodBody(code, code.indexOf('static boolean keyAllowedUnderGuard('));
+    assert.match(allow, /KEYCODE_DPAD_UP[\s\S]*?KEYCODE_DPAD_CENTER/, `${f}: the D-pad went dead under the lock`);
+    assert.match(allow, /KEYCODE_BACK/, `${f}: BACK went dead under the lock`);
+    assert.match(allow, /KEYCODE_VOLUME_UP[\s\S]*?KEYCODE_VOLUME_DOWN/, `${f}: volume went dead under the lock`);
+    assert.match(allow, /KEYCODE_MEDIA_PLAY_PAUSE[\s\S]*?KEYCODE_MEDIA_FAST_FORWARD/,
+      `${f}: the media keys went dead — the headset features die under the lock`);
+    assert.match(allow, /getUnicodeChar\(\) != 0\) return true/,
+      `${f}: typing keys went dead — the PIN digits and the parent's text fields`);
+    // …and everything else is REFUSED: the method's last word must be false, or an unknown
+    // vendor shortcut key sails through (fail closed is the entire feature)
+    assert.match(allow.trim(), /return false;\s*\}$/, `${f}: the whitelist no longer fails CLOSED`);
+    // layer 2: the watchdog's own gates — PiP and a real finish are not escapes, and a
+    // flagged legitimate departure (share/installer/browser/consent/picker) is honored
+    const dog = javaMethodBody(code, code.indexOf('static void maybeReclaimForeground('));
+    assert.match(dog, /keyGuardArmed\(a\)/, `${f}: the watchdog no longer checks the guard`);
+    assert.match(dog, /isFinishing\(\)/, `${f}: a real exit would be yanked back`);
+    assert.match(dog, /isInPictureInPictureMode\(\)/, `${f}: entering PiP would be yanked back`);
+    assert.match(dog, /LEGIT_LEAVE_WINDOW_MS/, `${f}: a deliberate departure would be yanked back`);
+    assert.match(code, /moveTaskToFront\(a\.getTaskId\(\), 0\)/, `${f}: the reclaim itself is gone`);
+    // every deliberate way OUT flags itself — one missing flag = that door fights the watchdog
+    for (const method of ['openUrl', 'exitApp', 'shareText', 'shareFile',
+      'openInstallPermissionSettings', 'startInstaller', 'deviceAuth']) {
+      const at = code.indexOf(method + '(PluginCall call)') >= 0
+        ? code.indexOf(method + '(PluginCall call)') : code.indexOf(method + '(');
+      assert.ok(at >= 0, `${f}: lost the ${method} anchor`);
+      assert.match(javaMethodBody(code, at), /noteLegitLeave\(\)/,
+        `${f}: ${method} no longer flags its departure — the watchdog yanks the user back from it`);
+    }
+    assert.match(code, /public void allowLeave\(PluginCall call\) \{ noteLegitLeave\(\); call\.resolve\(\); \}/,
+      `${f}: the JS-side departure door (the file pickers) is gone`);
+  }
+  // MainActivity: layer 1 consumes BEFORE super (and so before the WebView and the system
+  // unhandled-key fallback), and layer 2 runs in onStop AFTER the pinned PiP bookkeeping
+  for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java',
+    'native-reference/MainActivity.java']) {
+    const code = stripComments(readRepo(f));
+    const dke = javaMethodBody(code, code.indexOf('public boolean dispatchKeyEvent('));
+    assert.match(dke, /keyGuardArmed\(this\)[\s\S]*?!KidsNativePlugin\.keyAllowedUnderGuard\(event\)/,
+      `${f}: dispatchKeyEvent no longer swallows by the armed whitelist`);
+    assert.match(dke, /return true;/, `${f}: a blocked key is no longer CONSUMED — the fallback still launches the app`);
+    assert.match(dke, /return super\.dispatchKeyEvent\(event\);/, `${f}: allowed keys no longer reach the app at all`);
+    const stopAt = code.indexOf('public void onStop()');
+    const stopBody = javaMethodBody(code, stopAt);
+    const superAt = stopBody.indexOf('super.onStop()');
+    const reclaimAt = stopBody.indexOf('maybeReclaimForeground(this)');
+    assert.ok(superAt >= 0 && reclaimAt > superAt,
+      `${f}: the watchdog left onStop, or moved above super.onStop() (the v1.0.76 PiP order pin)`);
+  }
+  // GoogleAuthPlugin: the Play Services consent is its own activity — it must flag itself
+  for (const f of ['android/app/src/main/java/com/assaf/kidsplayer/GoogleAuthPlugin.java',
+    'native-reference/GoogleAuthPlugin.java']) {
+    const code = stripComments(readRepo(f));
+    const auth = javaMethodBody(code, code.indexOf('public void authorize(PluginCall call)'));
+    assert.match(auth, /KidsNativePlugin\.noteLegitLeave\(\)/,
+      `${f}: the consent UI no longer flags its departure — the watchdog yanks the parent out of it`);
+  }
+  // the permission layer 2 needs, in BOTH manifests — a normal install-time permission
+  for (const f of ['android/app/src/main/AndroidManifest.xml', 'native-reference/AndroidManifest.xml']) {
+    assert.match(readRepo(f), /android\.permission\.REORDER_TASKS/,
+      `${f}: REORDER_TASKS is gone — moveTaskToFront is refused and layer 2 is dead`);
+  }
+  // the JS half: the push rides applyExitLock (so activation/resume/boot all re-push),
+  // the settings toggle, and the boot arm; the file pickers flag their departure
+  const app = CODE.get('www/js/app.js');
+  const ael = app.slice(app.indexOf('async function applyExitLock()'), app.indexOf('\n}', app.indexOf('async function applyExitLock()')));
+  assert.match(ael, /setKioskGuard\(on === true\)/,
+    'applyExitLock no longer pushes the setting — the guard never arms on a TV');
+  const toggle = handlerBody(app, "$('exit-lock-toggle').addEventListener('change'");
+  assert.match(toggle, /setKioskGuard\(on === true\)/,
+    'the settings toggle no longer pushes — flipping the lock would not reach the key guard until re-activation');
+  assert.match(app, /lockTask\(\)\.catch\(\(\) => \{\}\);\s*\n\s*setKioskGuard\(true\)\.catch/,
+    'the boot arm no longer pushes — the launch-to-profile window is unguarded on TV');
+  assert.match(app, /allowLeave\(\)\.catch\(\(\) => \{\}\); \$\('import-file'\)\.click\(\)/,
+    'the snapshot picker no longer flags its departure');
+  assert.match(app, /allowLeave\(\)\.catch\(\(\) => \{\}\); \$\('links-file'\)\.click\(\)/,
+    'the links picker no longer flags its departure');
 });
 
 /* ---- v1.0.45 review findings, each pinned so it cannot come back ---- */

@@ -79,6 +79,9 @@ public class GoogleAuthPlugin extends Plugin {
                     }
                     try {
                         pendingCall = call;
+                        // v1.0.95: the Play Services consent is its own activity — flag it as
+                        // a deliberate departure so the TV kiosk watchdog never yanks it away.
+                        KidsNativePlugin.noteLegitLeave();
                         getActivity().startIntentSenderForResult(
                                 result.getPendingIntent().getIntentSender(),
                                 REQ_AUTHORIZE, null, 0, 0, 0);

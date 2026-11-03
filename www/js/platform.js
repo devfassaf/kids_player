@@ -588,6 +588,24 @@ export async function setPipState({ eligible = false, playing = false } = {}) {
   try { await kids.setPipState({ eligible: !!eligible, playing: !!playing }); } catch {}
 }
 
+/** v1.0.95 — push the exitLock SETTING to the native TV kiosk key guard (the setPipState
+ *  shape: dispatchKeyEvent and onStop read it synchronously, with no bridge in reach).
+ *  The OS pin state is NOT the setting — on most TVs startLockTask never engages at all. */
+export async function setKioskGuard(on) {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.setKioskGuard) return;
+  try { await kids.setKioskGuard({ on: on === true }); } catch {}
+}
+
+/** v1.0.95 — a deliberate way OUT of the app is about to open from JS (the system file
+ *  pickers go through a DOM input, never through a native method) — flag it so the TV
+ *  kiosk watchdog does not yank the parent back out of the picker. */
+export async function allowLeave() {
+  const kids = plugin('KidsNative');
+  if (!kids || !kids.allowLeave) return;
+  try { await kids.allowLeave(); } catch {}
+}
+
 /** Entering/leaving the PiP window. Fires BEFORE the matching appStateChange (Android
  *  calls onPictureInPictureModeChanged before onPause on entry — device-verified), which
  *  is what lets the app's own screen-off pause know this pause is not a backgrounding. */

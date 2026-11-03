@@ -14,7 +14,7 @@ import { clearCache } from './media.js';
 import { onAppResume, onAppPause, onBackButton, exitApp, prefGet, prefSet, prefRemove,
   siteViewerAvailable, openSiteViewer, closeSiteViewer, clearSiteData, onSiteEvent,
   setOrientation, httpGetBlob, audioMode, startBackgroundPlayback, stopBackgroundPlayback, onPlaybackCommand, ensureNotificationPermission,
-  pipSupported, setPipState, onPipChanged, onPipHidden } from './platform.js';
+  pipSupported, setPipState, onPipChanged, onPipHidden, setKioskGuard, allowLeave } from './platform.js';
 import { canonicalSitePrefix, ruleCandidatesFor, ruleIdFor, shortcutIdFor,
   extractSiteIconFromHtml, rulesForLockedSite, rulesForLockedPage } from './weblock.js';
 import { runMigrationIfNeeded } from './migrate.js';
@@ -204,6 +204,11 @@ async function applyExitLockUi() {
 async function applyExitLock() {
   const on = await exitLockOn();
   kioskCached = on === true; // v1.0.77 — sync mirror for the mini-player's BACK decision
+  // v1.0.95: arm/release the native TV kiosk key guard from the SETTING — on most TVs the
+  // OS pin below never engages at all (no screen-pinning support), so the guard cannot
+  // read the pin state; it needs the answer pushed, the setPipState shape. Riding THIS
+  // function means every caller — activation, the resume re-arm, the boot arm — re-pushes.
+  setKioskGuard(on === true).catch(() => {});
   try {
     const { lockTask } = await import('./platform.js');
     // v1.0.36: PIN ONLY, NEVER UNPIN, on profile activation. stopLockTask() makes many
@@ -9599,7 +9604,9 @@ function wire() {
       msg.textContent = 'גיבוי מלא הועתק ללוח (שמרו אותו בקובץ)'; msg.className = 'form-msg ok';
     } catch { msg.textContent = 'הייצוא נכשל'; msg.className = 'form-msg err'; }
   });
-  $('import-btn').addEventListener('click', () => $('import-file').click());
+  // v1.0.95: the system file picker is another activity — flag the deliberate departure
+  // or the TV kiosk watchdog yanks the parent back out of it.
+  $('import-btn').addEventListener('click', () => { allowLeave().catch(() => {}); $('import-file').click(); });
   $('import-file').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if (!f) return;
     const msg = $('backup-msg');
@@ -9624,7 +9631,7 @@ function wire() {
   // v1.0.93 — "📋 העתקת הרשימה" replaces the hidden "📨 שליחה כטקסט" fallback, which opened
   // a share sheet and reported it had even where Android refused to show one.
   $('links-copy').addEventListener('click', () => { linksCopy().catch(() => linksMsg('ההעתקה נכשלה — נסו שוב', 'err')); });
-  $('links-import').addEventListener('click', () => $('links-file').click());
+  $('links-import').addEventListener('click', () => { allowLeave().catch(() => {}); $('links-file').click(); }); // v1.0.95: the picker is a deliberate departure
   $('links-file').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     e.target.value = ''; // reset first: re-picking the same file must re-fire `change`
@@ -9822,6 +9829,7 @@ function wire() {
     const on = e.target.checked;
     await putSetting(activeProfileId, 'exitLock', on);
     maybeSchedulePush(); // it travels now — the other device must hear about it
+    setKioskGuard(on === true).catch(() => {}); // v1.0.95: the TV key guard follows the SETTING
     const { lockTask, unlockTask, isNative } = await import('./platform.js');
     let note = on ? 'נעילת היציאה הופעלה ✅' : 'נעילת היציאה כובתה';
     if (on) {
@@ -10096,6 +10104,7 @@ async function init() {
     if (await exitLockOn(await prefGet('activeProfile'))) {
       const { lockTask } = await import('./platform.js');
       lockTask().catch(() => {});
+      setKioskGuard(true).catch(() => {}); // v1.0.95: arm the TV key guard for the same window
     }
     await applyExitLockUi();
   } catch {}
