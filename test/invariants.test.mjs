@@ -2915,6 +2915,52 @@ test('boot resume is wired end to end, and NOTHING plays without a usable stop p
     'the kick is no longer resumeCurrent — a hand-rolled play would bypass the one wrapper both engines share');
 });
 
+test("a swiped-away task kills the playback service, and a previous life's command never acts (v1.0.97)", () => {
+  // Field report on v1.0.96: minimize → swipe the app away from recents → relaunch, and the
+  // boot-resumed video opened PAUSED, deterministically — with the media notification left
+  // STUCK in the tray (both user-confirmed). A started foreground service SURVIVES task
+  // removal, so the swipe left a zombie: process + service + notification + an ACTIVE
+  // MediaSession for a player that died with the WebView. A stop/pause dispatched to that
+  // zombie crossed into the NEXT launch over the retained command channel, where
+  // markUserToggle crowned it a PERSON's pause and the v1.0.96 nudge stood down BY DESIGN.
+  // Pure-java half + wiring no node test can execute — pinned here, comment-stripped.
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java',
+                   'native-reference/PlaybackService.java']) {
+    const code = readRepoCode(p);
+    const at = code.indexOf('public void onTaskRemoved(');
+    assert.ok(at >= 0, `${p}: onTaskRemoved is gone — a swiped task leaves a zombie service, a stuck notification and an ACTIVE session whose stop crosses into the next launch`);
+    const body = javaMethodBody(code, at);
+    for (const call of ['releaseSession();', 'stopForegroundCompat();', 'stopSelf();']) {
+      assert.ok(body.includes(call),
+        `${p}: onTaskRemoved lost ${call} — the ACTION_STOP teardown must run WHOLE (a session left active keeps taking dispatches for a dead player)`);
+    }
+  }
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/KidsNativePlugin.java',
+                   'native-reference/KidsNativePlugin.java']) {
+    const code = readRepoCode(p);
+    const at = code.indexOf('public static void emitPlaybackCommand(');
+    assert.ok(at >= 0, `${p}: emitPlaybackCommand is gone`);
+    assert.ok(javaMethodBody(code, at).includes('o.put("at", System.currentTimeMillis());'),
+      `${p}: the emit stamp is gone — JS cannot tell a previous life's command from this one's`);
+  }
+  // platform passes the stamp through (dropping it reads every command as fresh)…
+  const opc = fnSlice(CODE.get('www/js/platform.js'), 'export function onPlaybackCommand(');
+  assert.match(opc, /fn\(a, o && o\.at\)/, 'platform.onPlaybackCommand drops the emit stamp');
+  // …and app.js gates through the pure rule BEFORE markUserToggle: a gate below the mark is
+  // the original bug shape — the stale pause gets crowned a person's pause first, and the
+  // boot nudge then stands down for a pause nobody pressed (the v1.0.72 protection inverted).
+  const app = CODE.get('www/js/app.js');
+  const hpc = fnSlice(app, 'async function handlePlaybackCommand(action, at)');
+  const gateAt = hpc.indexOf('if (!commandFresh(at, pageBornAt)) return;');
+  assert.ok(gateAt >= 0,
+    'the freshness gate is gone from handlePlaybackCommand (or stopped routing through pure commandFresh)');
+  const markAt = hpc.indexOf('markUserToggle(');
+  assert.ok(markAt > gateAt,
+    "the gate no longer precedes markUserToggle — a stale pause would be crowned a PERSON's pause");
+  assert.match(app, /onPlaybackCommand\(\(action, at\) => \{ handlePlaybackCommand\(action, at\)/,
+    'the listener registration drops the stamp');
+});
+
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
   // Same rule the guide slides follow: an asset named in code must EXIST in www/, or the
   // child gets an empty circle where their folder should be. And it must be self-contained

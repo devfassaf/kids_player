@@ -589,10 +589,12 @@ export function bootPlayNudge(state) {
  * while a wrongly-accepted one is a one-off ghost the next press corrects.
  */
 export function commandFresh(at, pageAt) {
-  const a = Number(at);
-  const p = Number(pageAt);
-  if (!Number.isFinite(a) || !Number.isFinite(p)) return true;
-  return a >= p;
+  // typeof, not Number(): `Number(null) === 0` is the documented trap (plan.screenOffMinutes)
+  // — a null/''/boolean stamp would coerce to a FINITE ancient time and be dropped, i.e. a
+  // dead button, the exact fail direction this rule must avoid.
+  if (typeof at !== 'number' || !Number.isFinite(at)) return true;
+  if (typeof pageAt !== 'number' || !Number.isFinite(pageAt)) return true;
+  return at >= pageAt;
 }
 
 /* ---------------- interrupted by a call (v1.0.57) ---------------- */
