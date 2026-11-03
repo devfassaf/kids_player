@@ -442,8 +442,12 @@ public class PlaybackService extends Service {
     public void onDestroy() {
         // A session that outlives its service keeps taking the car's media buttons for a
         // video that is not playing — the "control for a dead video" this feature avoids
-        // everywhere else.
+        // everywhere else. stopForegroundCompat (v1.0.98): MainActivity's finishing
+        // onDestroy tears this service down with a bare stopService(), so the notification
+        // vanishing must not depend on the OEM honouring the implicit removal — a double
+        // call after the ACTION_STOP trio is a no-op.
         releaseSession();
+        stopForegroundCompat();
         super.onDestroy();
     }
 

@@ -321,6 +321,55 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.0.98 — **THE PiP WINDOW'S X KILLS THE PLAYBACK SERVICE TOO — THE ZOMBIE'S THIRD DOOR**
+  (field report on v1.0.97, same day: clean exit now fully heals, "אך כאשר אני ממזער את
+  האפליקציה למסך קטן בצד… ואז סוגר… על ידי לחיצה על כפתור ה-X… עדיין מופיע לי בבר למעלה
+  איקון… הסרטון רק נפתח ולא מתנגן" — and the explicit spec: X בחלון הממוזער = האפליקציה
+  נסגרת, הבר נעלם, והכניסה הבאה מנגנת מידי).
+  - **THE DIAGNOSIS IS IN THE STUCK NOTIFICATION, AGAIN**: the OS PiP window's X (the
+    SYSTEM's own affordance, v1.0.76) **FINISHES the activity WITHOUT removing the task**,
+    so `onTaskRemoved` — the v1.0.97 fix — never fires, and the identical zombie survives
+    through a door that fix cannot see: live process, live foreground service, stuck
+    notification, ACTIVE MediaSession for a player that died with the WebView, and the next
+    launch opening paused. Three close doors, now all covered: clean exit (`exitApp` kills
+    the process), swipe-kill from recents (`onTaskRemoved`), and **any FINISHING destroy**
+    (this fix) — which also covers an OEM's freeform/floating-window close button for free.
+  - **THE FIX IS `MainActivity.onDestroy`, GATED ON `isFinishing()`** (both java copies):
+    `if (isFinishing()) stopService(PlaybackService)` then `super.onDestroy()`. The WebView
+    — the actual audio engine — dies with the activity, so on a finishing destroy the
+    control dies with it (the "control for a dead video" rule, one level up from where
+    PlaybackService.onDestroy states it).
+  - ⚠️ **`isFinishing()` IS THE WHOLE bgPlay GUARD, not a nicety**: background listening is
+    HOME — a stop WITHOUT a finish — and a destroy-without-finish (the system reclaiming
+    the activity under memory pressure mid-listen) must NOT kill the music. An ungated stop
+    would silently delete the v1.0.63 feature exactly when it is being used. Plant-proven:
+    the guard goes red when the gate is dropped, AND when the stop merely drifts below the
+    if-block (the gated-branch body is brace-extracted, not index-compared — the lazy
+    `stop > gate` check stays green on that drift).
+  - ⚠️ **`stopService`, NEVER `startService(ACTION_STOP)`**: a finishing activity already
+    counts as background, where `startService` throws `IllegalStateException` on API 26+ —
+    the teardown would crash exactly on the path it exists for. `stopService` is exempt
+    from background-start restrictions; the service's own `onDestroy` releases the session,
+    and (new belt, same release) runs `stopForegroundCompat()` too, so the notification
+    vanishing does not ride on the OEM honouring the implicit FGS-notification removal.
+    A double stopForeground after the ACTION_STOP trio is a no-op.
+  - **NOTHING ELSE MOVES**: `onStop` keeps its v1.0.95 order-pinned watchdog untouched; the
+    JS `pipHidden` door (save the playhead FIRST — it runs at onStop, before this destroy)
+    is unchanged; `onTaskRemoved`, `commandFresh` and the v1.0.96 nudge stay as they are.
+    The clean exit (`finishAndRemoveTask`) now also passes through this stop — redundant
+    and harmless ahead of the process kill.
+  - **PURE JAVA, NO NODE TEST CAN EXECUTE IT AND NOTHING CHANGED IN JS TO BROWSER-VERIFY**
+    (the v1.0.79 shape) — so 1 invariants guard (both copies, comment-stripped,
+    `javaMethodBody`-anchored): the override exists, the `isFinishing()` gate exists, the
+    stop sits INSIDE the gate's own brace-balanced body, `super.onDestroy()` survives, and
+    the service's `onDestroy` carries both `releaseSession` and `stopForegroundCompat`.
+    **Every assertion proven red on a planted regression (5 plants, incl. the
+    drifted-below-the-gate vacuity trap)**; both java copies byte-identical; javac
+    syntax-clean (the full compile gate is the local release build, the v1.0.88 rule).
+    **The real X is a DEVICE item** (TESTING.md): PiP → X → the notification VANISHES →
+    relaunch plays, ×3; and the bgPlay regression check — HOME mid-song keeps the music
+    and the live notification.
+
 - v1.0.97 — **A SWIPED-AWAY TASK KILLS THE PLAYBACK SERVICE, AND A PREVIOUS LIFE'S COMMAND
   NEVER ACTS** (field report on v1.0.96, same day: "הפיצ'ר פועל רק כאשר סוגרים מסודר את
   האפליקציה, אך כאשר ממזערים ואז סוגרים אותה הסרטון נפתח אך לא מתנגן" — deterministic by
