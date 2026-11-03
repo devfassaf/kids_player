@@ -393,6 +393,29 @@ public class PlaybackService extends Service {
         return START_NOT_STICKY;
     }
 
+    /**
+     * v1.0.97 — THE TASK IS GONE, SO THE CONTROL DIES WITH IT (field report: minimize, then
+     * swipe the app away from recents, then relaunch — the boot-resumed video opened PAUSED,
+     * deterministically). A started foreground service SURVIVES task removal, so the swipe
+     * left a ZOMBIE: this service, its stuck notification (user-confirmed in the field), and
+     * an ACTIVE MediaSession for a player that died with the WebView. A stop/pause the
+     * system dispatches to that session then crossed into the NEXT launch over the retained
+     * command channel, where JS crowned it a PERSON's pause (markUserToggle) and the
+     * v1.0.96 boot nudge correctly stood down. The clean-exit path never showed any of this
+     * because exitApp kills the process outright.
+     *
+     * Same teardown as ACTION_STOP, exactly: with no task there is no player — the WebView
+     * IS the audio engine, so even a bgPlay listen is already silent here and stopping can
+     * cost nothing — and a control for a dead video must die (the onDestroy rule).
+     */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        releaseSession();
+        stopForegroundCompat();
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
+
     private void startForegroundCompat(Notification n) {
         try {
             if (Build.VERSION.SDK_INT >= 29) {

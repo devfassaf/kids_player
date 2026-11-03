@@ -580,12 +580,20 @@ public class KidsNativePlugin extends Plugin {
      * A notification button. RETAINED until consumed, like a share intent: the WebView may
      * be frozen when the parent taps ⏭ with the screen off, and a dropped command is a
      * button that does nothing.
+     *
+     * v1.0.97 — every command carries its EMIT STAMP (`at`, wall clock — the same clock as
+     * JS Date.now()). The retained channel outlives a page-life, and a 'pause' a zombie
+     * session emitted around a task removal used to land in the NEXT launch, pause the
+     * boot-resumed video and get crowned a PERSON's pause. JS drops commands born before
+     * its own page; a retained tap delivered minutes later IN THE SAME LIFE (a frozen
+     * WebView, screen off) still runs, which is this channel's whole design promise.
      */
     public static void emitPlaybackCommand(String action) {
         KidsNativePlugin p = instance;
         if (p == null) return;
         JSObject o = new JSObject();
         o.put("action", action == null ? "" : action);
+        o.put("at", System.currentTimeMillis());
         p.notifyListeners("playbackCommand", o, true);
     }
 
