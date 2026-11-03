@@ -2961,6 +2961,45 @@ test("a swiped-away task kills the playback service, and a previous life's comma
     'the listener registration drops the stamp');
 });
 
+test("the PiP window's X kills the playback service too (v1.0.98)", () => {
+  // Field report on v1.0.97, same day: clean exit and swipe-kill both heal now, but closing
+  // the PiP window with its X left the media notification STUCK and the next launch opening
+  // paused — the X FINISHES the activity WITHOUT removing the task, so onTaskRemoved (the
+  // v1.0.97 fix, above) never fires and the zombie returns through a third door. The
+  // WebView — the actual audio engine — dies with the activity, so a FINISHING destroy
+  // must take the service with it. Pure java; comment-stripped, brace-balanced anchors.
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/MainActivity.java',
+                   'native-reference/MainActivity.java']) {
+    const code = readRepoCode(p);
+    const at = code.indexOf('public void onDestroy(');
+    assert.ok(at >= 0,
+      `${p}: onDestroy is gone — closing the PiP window leaves a zombie service, a stuck notification, and a boot resume that opens paused`);
+    const body = javaMethodBody(code, at);
+    const gateAt = body.indexOf('if (isFinishing())');
+    assert.ok(gateAt >= 0,
+      `${p}: the isFinishing() gate is gone — an UNGATED stop kills background listening whenever the system reclaims the activity mid-bgPlay (a destroy WITHOUT a finish)`);
+    // the stop must sit INSIDE the gated branch, not merely after the gate's text — a
+    // stop that drifted below the if-block would be unconditional and pass a lazier check
+    const gateBody = javaMethodBody(body, gateAt);
+    assert.ok(gateBody.includes('stopService(new Intent(this, PlaybackService.class))'),
+      `${p}: onDestroy no longer stops PlaybackService inside the finishing gate — the PiP window's X leaves the zombie behind`);
+    assert.ok(body.includes('super.onDestroy()'), `${p}: super.onDestroy() is gone`);
+  }
+  // The belt: this teardown path is a bare stopService(), so the notification vanishing
+  // must not ride only on the OEM honouring the implicit FGS-notification removal.
+  for (const p of ['android/app/src/main/java/com/assaf/kidsplayer/PlaybackService.java',
+                   'native-reference/PlaybackService.java']) {
+    const code = readRepoCode(p);
+    const at = code.indexOf('public void onDestroy(');
+    assert.ok(at >= 0, `${p}: the service lost its onDestroy`);
+    const body = javaMethodBody(code, at);
+    for (const call of ['releaseSession();', 'stopForegroundCompat();']) {
+      assert.ok(body.includes(call),
+        `${p}: the service's onDestroy lost ${call} — a stopService() teardown then leaves a live session or a stuck notification`);
+    }
+  }
+});
+
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {
   // Same rule the guide slides follow: an asset named in code must EXIST in www/, or the
   // child gets an empty circle where their folder should be. And it must be self-contained

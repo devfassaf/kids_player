@@ -158,6 +158,28 @@ public class MainActivity extends BridgeActivity {
         KidsNativePlugin.maybeReclaimForeground(this);
     }
 
+    /** v1.0.98 — the PiP window's X FINISHES the activity without removing the task, so
+        PlaybackService.onTaskRemoved (v1.0.97's swipe-kill fix) never fires and the
+        service survived as a zombie: a stuck media notification, an ACTIVE MediaSession
+        for a player that died with this WebView, and the next launch opening paused
+        (field report, 2026-11-03). The WebView — the actual audio engine — dies with this
+        activity, so on a FINISHING destroy the control dies with it (the "control for a
+        dead video" rule, PlaybackService.onDestroy).
+        isFinishing() is the whole bgPlay guard: background listening is HOME — a stop
+        WITHOUT a finish — and a destroy-without-finish (the system reclaiming the
+        activity under memory pressure mid-listen) must NOT kill the music.
+        stopService, never startService(ACTION_STOP): a finishing activity already counts
+        as background, where startService throws on API 26+; stopService is always
+        permitted. The service's own onDestroy releases the session and strips the
+        foreground notification. */
+    @Override
+    public void onDestroy() {
+        if (isFinishing()) {
+            try { stopService(new Intent(this, PlaybackService.class)); } catch (Throwable ignored) {}
+        }
+        super.onDestroy();
+    }
+
     // F12b share target. VERIFIED: BridgeActivity.load() ends with
     // `this.onNewIntent(getIntent())`, so this ONE override covers both cold start and
     // warm singleTask redelivery — a separate getIntent() branch in onCreate would
