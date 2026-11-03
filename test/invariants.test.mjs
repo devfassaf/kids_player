@@ -2890,6 +2890,29 @@ test('boot resume is wired end to end, and NOTHING plays without a usable stop p
     "a video with no usable stop point no longer plays NOTHING — the user's explicit decision");
   assert.match(hook, /openWatch\(rec, \{ bootResume: true \}\)/,
     'the open lost its bootResume opt — it would start from 0 instead of the stop point');
+
+  // 5) v1.0.96 — THE PLAY NUDGE (field report: the boot open SOMETIMES sat paused, varying
+  //    per attempt, on BOTH engines — each engine fires play exactly once against a cold
+  //    boot's races, so a lost race stayed paused forever). The hook arms it right after
+  //    the open; the chain must stay pure-routed, bounded by the fixed schedule, gated on
+  //    the SAME video and a quiet screen, and kicking only through resumeCurrent.
+  const openAt = hook.indexOf('openWatch(rec, { bootResume: true })');
+  const armAt = hook.indexOf('armBootPlayNudge(rec.key)');
+  assert.ok(openAt >= 0 && armAt > openAt,
+    'the hook no longer arms the play nudge after the boot open — a lost race stays paused forever');
+  const nudge = fnSlice(app, 'function armBootPlayNudge(');
+  assert.match(nudge, /if \(i >= BOOT_NUDGE_DELAYS_MS\.length\) return;/,
+    'the nudge chain lost its terminator — the retry must be bounded by the FIXED schedule (the v1.0.58 loop rule), and this line is also the constant\'s live consumer');
+  assert.match(nudge, /!nav\.isActive\('watch'\) \|\| !currentWatch \|\| currentWatch\.key !== key/,
+    'a tick no longer re-checks the screen/video — a late kick would act on a video the child switched away from (the logoTarget rule)');
+  assert.match(nudge, /isModalOpen\(\) \|\| nav\.isActive\('pin'\)/,
+    'a tick no longer yields to a modal/PIN that claimed the screen');
+  assert.match(nudge, /userPaused: !!\(st && st\.userPaused\)/,
+    'the userPaused mark no longer reaches the pure rule — the nudge would override a pause the CHILD chose (the v1.0.72 rule)');
+  assert.match(nudge, /const act = bootPlayNudge\(\{/,
+    'the per-tick decision stopped routing through pure bootPlayNudge — two copies of one rule is how v1.0.72 happened');
+  assert.match(nudge, /if \(act === 'kick'\) resumeCurrent\(\);/,
+    'the kick is no longer resumeCurrent — a hand-rolled play would bypass the one wrapper both engines share');
 });
 
 test('the folder illustration ships, is self-contained, and has an emoji fallback (v1.0.41)', () => {

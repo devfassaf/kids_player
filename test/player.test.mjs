@@ -772,3 +772,26 @@ test('transportIntent: the headset answer button toggles; a DIRECTIONAL verb nev
   assert.equal(transportIntent(null, true), null);
   assert.equal(transportIntent('toggle', undefined), 'resume', 'unknown playing state reads as "not playing" — a wrong resume beats a wrong pause');
 });
+
+/* ---------------- boot play nudge (v1.0.96) ---------------- */
+import { bootPlayNudge } from '../www/js/playerlogic.js';
+
+test('bootPlayNudge: kicks a mounted paused player, never a PERSON\'s pause, junk reads as stop (v1.0.96)', () => {
+  // the field report's exact case: the boot open lost the race — mounted, silent, nobody paused it
+  assert.equal(bootPlayNudge({ mounted: true, playing: false, userPaused: false }), 'kick');
+  // success — the good runs see ZERO kicks
+  assert.equal(bootPlayNudge({ mounted: true, playing: true, userPaused: false }), 'stop');
+  // the v1.0.72 rule: a pause a PERSON chose is never overridden, mounted or not
+  assert.equal(bootPlayNudge({ mounted: true, playing: false, userPaused: true }), 'stop');
+  assert.equal(bootPlayNudge({ mounted: true, playing: true, userPaused: true }), 'stop');
+  // nothing mounted yet (the YT IFrame API still loading on a cold boot) → the NEXT tick,
+  // never give up on the first one
+  assert.equal(bootPlayNudge({ mounted: false, playing: false, userPaused: false }), 'wait');
+  // TOTAL, and junk fails toward the STATUS QUO (a paused video is one tap away; a blind
+  // kick is sound nobody asked for)
+  assert.equal(bootPlayNudge(), 'stop');
+  assert.equal(bootPlayNudge(null), 'stop');
+  assert.equal(bootPlayNudge('garbage'), 'stop');
+  assert.equal(bootPlayNudge({}), 'stop');
+  assert.equal(bootPlayNudge({ mounted: 'yes' }), 'stop', 'truthy junk is not true — only an explicit boolean answers');
+});
