@@ -321,6 +321,58 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.0.97 — **A SWIPED-AWAY TASK KILLS THE PLAYBACK SERVICE, AND A PREVIOUS LIFE'S COMMAND
+  NEVER ACTS** (field report on v1.0.96, same day: "הפיצ'ר פועל רק כאשר סוגרים מסודר את
+  האפליקציה, אך כאשר ממזערים ואז סוגרים אותה הסרטון נפתח אך לא מתנגן" — deterministic by
+  CLOSE MODE, which is what ruled the v1.0.96 race back out).
+  - **THE ZOMBIE, user-confirmed twice before designing**: after minimize → swipe-kill the
+    media notification stays STUCK in the tray (= the foreground service, and with it the
+    PROCESS, survived task removal — `PlaybackService` had no `onTaskRemoved` and
+    `stopWithTask` is unset), and in the failing boot ONE tap starts the video instantly
+    (= the engine is healthy; the video is merely PAUSED). The clean-exit path never showed
+    any of it because `exitApp` kills the process outright.
+  - **THE CHAIN**: the zombie's MediaSession stays ACTIVE (`publishSession` ends in
+    `setActive(true)`); its callbacks `onPause()`/`onStop()` emit `"pause"` into the
+    RETAINED command channel (`notifyListeners(..., true)`), and the emit static
+    (`instance = this` in `load()`) always points at the LATEST bridge — so a stop/pause
+    the SYSTEM dispatches to a removed task's session crosses into the NEXT launch. There
+    `handlePlaybackCommand` finds `bgPlayLive` already true (the boot open armed the
+    session), pauses the boot-resumed video — **and `markUserToggle` crowns it a PERSON's
+    pause, so the v1.0.96 nudge stands down BY DESIGN**: the v1.0.72 protection, inverted
+    against the boot. "נפתח אך לא מתנגן", every time.
+  - **FIX 1 — THE TASK IS GONE, SO THE CONTROL DIES WITH IT**: `onTaskRemoved` in
+    PlaybackService (both copies) runs the ACTION_STOP teardown trio verbatim
+    (`releaseSession(); stopForegroundCompat(); stopSelf();`). Swipe-kill becomes
+    equivalent to clean exit — no zombie session to receive dispatches, no stuck
+    notification (a visible bug in its own right), the process free to die. **bgPlay loses
+    nothing**: background listening is HOME (task NOT removed), and on task removal the
+    WebView — the actual audio engine — dies anyway, so the service was a control over
+    silence (the onDestroy "control for a dead video" rule, one level up).
+  - **FIX 2 — FRESHNESS BY BIRTH, NOT BY AGE** (the belt): `emitPlaybackCommand` stamps
+    every command `at: System.currentTimeMillis()`; platform passes it through; pure
+    `playerlogic.commandFresh(at, pageBornAt)` gates `handlePlaybackCommand`'s FIRST line —
+    a command stamped before THIS page was born belongs to a life that no longer exists,
+    and is dropped before ANY verb (a stale 'next' must not act either) and above all
+    BEFORE `markUserToggle` (order-pinned — a gate below the mark is the original bug).
+    ⚠️ **Deliberately NOT an age bound**: the channel's design promise is that a tap
+    retained while the WebView is frozen (screen off, bgPlay) is delivered minutes later IN
+    THE SAME life, and an age bound would break exactly that. TOTAL, failing toward a LIVE
+    button: a missing/junk stamp reads as fresh — and `typeof`-guarded, because
+    `Number(null) === 0` (the plan.screenOffMinutes trap) would coerce a null stamp into an
+    "ancient" one and kill a real person's button.
+  - 1 unit test (`commandFresh`: stale/birth-tie/fresh, junk totality incl. the null-coercion
+    trap) + 1 invariants guard (both java copies comment-stripped, `javaMethodBody`-anchored:
+    `onTaskRemoved` with the WHOLE teardown trio; the emit stamp; platform passing it; the
+    gate routed through the pure rule AND indexed before `markUserToggle`; the registration
+    carrying the stamp), **every assertion proven red on a planted regression (8 plants)**.
+    Both java copies byte-identical; javac syntax-clean (the full compile gate is the local
+    release build, the v1.0.88 rule). **Browser-verified end to end against the real app
+    with a stubbed bridge (8 checks)**: a stale 'pause' born 10 minutes before the page left
+    the boot-resumed video PLAYING and unmarked; a stale 'next' left the track alone; a
+    FRESH pause still paused and marked; a fresh play resumed and cleared the mark.
+    **The real swipe-kill is a DEVICE item** (TESTING.md): after closing from recents the
+    notification must VANISH, and the next launch must play — ×3, it was deterministic.
+
 - v1.0.96 — **THE BOOT RESUME ENDS IN SOUND, NOT IN A PAUSED PAGE** (field report on
   v1.0.95, same day: "לפעמים הסרטון מתנגן מיד בעת הפתיחה ולפעמים הוא נפתח אבל בהשהייה…
   בכל ניסיון פתיחה מחדש קיבלתי תוצאה שונה. זה קרה גם בסרטון יוטיוב וגם בשיר").
