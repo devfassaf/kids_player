@@ -216,14 +216,17 @@ for anything destructive, and purge it afterwards.
       on a small playlist the button simply disappears at the end (no error).
 
 ### Playback
-- [ ] **Boot resume** (v1.0.95): enable "המשך ניגון בעת כניסה", stop a video mid-way,
-      force-close the app, reopen → after the profile loads, THAT video resumes from ~3s
-      before the stop point, **in the ordinary (windowed) player with real SOUND and no
-      touch** — the cold start has no user activation, so fullscreen is expected to be
-      refused (⛶ still enlarges; the browser proved the flow with a stubbed engine, but
-      autoplay-with-sound on a cold start only a device can prove). Let the last video END
-      → the next launch lands on the home and plays nothing. With the flag OFF (the
-      default): nothing changes.
+- [ ] **Boot resume** (v1.0.95; play nudge v1.0.96): enable "המשך ניגון בעת כניסה", stop a
+      video mid-way, force-close the app, reopen → after the profile loads, THAT video
+      resumes from ~3s before the stop point, **in the ordinary (windowed) player with real
+      SOUND and no touch** — the cold start has no user activation, so fullscreen is
+      expected to be refused (⛶ still enlarges). ⚠️ **REPEAT ~5 COLD OPENS PER ENGINE (a
+      YouTube video AND a Drive song)**: the v1.0.95 failure was INTERMITTENT — a one-shot
+      play losing a cold-boot race — so one good run proves nothing; every open must be
+      PLAYING within ~2–3s (the nudge's first ticks). While it plays, pause by hand and
+      wait ~8s → it must STAY paused (the nudge never overrides a person's pause). Let the
+      last video END → the next launch lands on the home and plays nothing. With the flag
+      OFF (the default): nothing changes.
 - [ ] **Continuous play** (v1.0.25): enable it for one child, let a video end → the countdown
       overlay appears and the next video starts without leaving the player. ✋ returns to the
       folder. With it OFF, a video ending returns to the folder as before.

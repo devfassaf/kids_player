@@ -24,6 +24,7 @@ import { PAGE_VIDEOS, PAGE_WATCH, PAGE_FOLDERS, AVATARS,
   SCREEN_OFF_DEFAULT_MIN, SCREEN_OFF_PROMPT_SEC, PRUNE_REVIEW_CAP,
   KEEP_NEWEST_SUGGESTED, SITE_PROBE_TIMEOUT_MS, CALL_RESUME_POLL_MS,
   RECENT_DEFAULT_LIMIT, RECENT_MAX_LIMIT, RECENT_MIN_PLAY_SEC, BOOT_RESUME_SCAN_MAX,
+  BOOT_NUDGE_DELAYS_MS,
   CACHE_SWEEP_EVERY_MS, FOLDER_SEARCH_MAX_PER_FOLDER, FOLDER_SEARCH_MAX_TOTAL, BG_ART_MAX_BYTES,
   PIP_TRACK_MAX, TAP_SLOP_PX } from './config.js';
 import { confirmKid, askKid, alertKid, mountModal, isModalOpen } from './ui/modal.js';
@@ -32,7 +33,7 @@ import { toast } from './ui/toast.js';
 import { planAutoplay, autoplayNextTarget, nextInOrder, previewEmbedUrl, previewBubbleButtons,
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
-  pipEligibility, pipSkipTarget, miniEligible, transportIntent } from './playerlogic.js';
+  pipEligibility, pipSkipTarget, miniEligible, transportIntent, bootPlayNudge } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -8931,7 +8932,51 @@ async function maybeBootResume() {
     // (the logoTarget rule — a late decision never paints over a screen that moved on)
     if (nav.isActive('watch') || isModalOpen() || nav.isActive('pin')) return;
     await openWatch(rec, { bootResume: true });
+    armBootPlayNudge(rec.key);
   } catch { /* total — a launch must never break on a convenience */ }
+}
+
+/**
+ * v1.0.96 — THE PLAY NUDGE: the boot open must end in SOUND, not in a paused page (field
+ * report on v1.0.95: "לפעמים הסרטון מתנגן מיד... ולפעמים הוא נפתח אבל בהשהייה", varying per
+ * attempt, on BOTH engines). Each engine fires play exactly ONCE — the file engine swallows
+ * a refused play() by design, YouTube gets one playVideo() at onReady — against a cold
+ * boot's moving target (entry-refresh jank, a slow IFrame-API load, audio-focus bounces), so
+ * a lost race stayed paused forever; "sometimes yes" is what proves it is a race and not a
+ * policy block. Tile taps never showed it in 95 versions because a finger was there to
+ * press play.
+ *
+ * So: for a few seconds after the boot open, re-check and press play again — through pure
+ * `bootPlayNudge` (playerlogic), which also encodes what the nudge must NEVER do: override a
+ * pause a PERSON chose (`userPaused`, the v1.0.72 mark — `resumeCurrent` is only called when
+ * that mark is absent), or keep going once the video plays (the good runs see ZERO kicks).
+ * Each tick re-checks the SCREEN first (the logoTarget rule): the child leaving the watch
+ * view, switching video (the key changed), or a modal/PIN claiming the screen all end the
+ * chain silently. BOUNDED BY CONSTRUCTION: the schedule is the fixed `BOOT_NUDGE_DELAYS_MS`
+ * array (the v1.0.58 loop rule), 'wait' ticks cover a YT player that has not mounted yet,
+ * and a 'kick' keeps checking — one press can lose the same race again.
+ */
+function armBootPlayNudge(key) {
+  const tick = (i) => {
+    if (i >= BOOT_NUDGE_DELAYS_MS.length) return;
+    const delta = BOOT_NUDGE_DELAYS_MS[i] - (i > 0 ? BOOT_NUDGE_DELAYS_MS[i - 1] : 0);
+    setTimeout(() => {
+      try {
+        if (!nav.isActive('watch') || !currentWatch || currentWatch.key !== key) return;
+        if (isModalOpen() || nav.isActive('pin')) return;
+        const st = playbackState();
+        const act = bootPlayNudge({
+          mounted: !!st,
+          playing: !!(st && st.playing),
+          userPaused: !!(st && st.userPaused)
+        });
+        if (act === 'stop') return;
+        if (act === 'kick') resumeCurrent();
+        tick(i + 1);
+      } catch { /* total — a nudge must never take the player down */ }
+    }, Math.max(0, delta));
+  };
+  tick(0);
 }
 
 async function activateProfile(id) {

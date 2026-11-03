@@ -546,6 +546,31 @@ export function transportIntent(action, playing) {
   return null;
 }
 
+/**
+ * v1.0.96 — PURE: one tick of the boot-resume PLAY NUDGE (field report on v1.0.95: the
+ * launch auto-resume opened the watch page but SOMETIMES sat paused — varying per attempt,
+ * on both engines. Each engine fires play exactly once against a cold boot's moving target,
+ * so a lost race stayed paused forever; "sometimes yes" is what proves it is a race, not a
+ * policy block). The nudge re-checks a few times after the boot open and answers:
+ *
+ *   'kick' — mounted but not playing, and nobody paused it on purpose → press play again.
+ *   'wait' — nothing mounted yet (the YT IFrame API is still loading on a cold start) →
+ *            try the next tick rather than giving up on the first one.
+ *   'stop' — playing (success: the good runs see ZERO kicks), or `userPaused` (the v1.0.72
+ *            rule: a pause a PERSON chose is never overridden — the mark the toggle
+ *            surfaces set via markUserToggle, carried by playbackState()).
+ *
+ * TOTAL, and junk reads as 'stop': the fail direction is the status quo (a video that
+ * stays paused costs one tap; a blind kick could restart sound nobody asked for).
+ */
+export function bootPlayNudge(state) {
+  if (!state || typeof state !== 'object') return 'stop';
+  if (state.playing === true || state.userPaused === true) return 'stop';
+  if (state.mounted === true) return 'kick';
+  if (state.mounted === false) return 'wait';
+  return 'stop';
+}
+
 /* ---------------- interrupted by a call (v1.0.57) ---------------- */
 
 /** The audio modes that mean a call is happening, ringing included. */

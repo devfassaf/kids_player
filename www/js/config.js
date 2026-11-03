@@ -198,6 +198,17 @@ export const RECENT_MIN_PLAY_SEC = 10;
 // touched videos all being deleted means there is nothing worth auto-resuming anyway.
 export const BOOT_RESUME_SCAN_MAX = 10;
 
+// v1.0.96 — the boot-resume PLAY NUDGE's tick schedule (ms after the boot open). The field
+// report on v1.0.95: the boot open SOMETIMES played and sometimes sat paused, varying per
+// attempt, on BOTH engines — the signature of a one-shot play racing a cold boot (entry-
+// refresh jank, slow YouTube init, audio-focus bounces), not of a policy block ("sometimes
+// yes" proves gesture-less play is allowed). Each engine fires play exactly once, so a lost
+// race stayed paused forever. The nudge re-checks at these offsets and kicks a mounted,
+// not-playing, not-user-paused player. A FIXED ARRAY, never a while-loop: the retry is
+// bounded by construction (the v1.0.58 rule), and the last tick is late enough to cover a
+// slow YT IFrame-API load on morning Wi-Fi.
+export const BOOT_NUDGE_DELAYS_MS = [1200, 2600, 4500, 7000];
+
 /* v1.0.39 — ROLLING WINDOW: keep only the newest N videos per channel.
    0 = OFF, and OFF IS THE DEFAULT. This is the only feature in the app that deletes the
    CHILD'S content, so it may never arrive with an update: a family that never opens the
