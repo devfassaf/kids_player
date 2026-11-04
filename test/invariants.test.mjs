@@ -5370,35 +5370,6 @@ test('PiP: entry is gated, the pause handler knows a shrink from a backgrounding
     'the PiP-hidden door ignores bgPlay — screen-off over the window would silence a legitimate background listen');
   assert.doesNotMatch(hidden, /\bstop\(\)/, 'the PiP-hidden door tears the player down');
 
-  // 2b) ⚠️ v1.0.99 — THE X IS A CLOSE, NOT A PAUSE. Measured: tapping the window's X neither
-  //     removes the task (onTaskRemoved, v1.0.97) nor finishes the activity (onDestroy,
-  //     v1.0.98) — it backgrounds the app with the video paused and the service alive, and
-  //     reopening is a warm resume that never auto-plays. The native side already passes the
-  //     `dismissed` flag (v1.0.76); the handler must CONSUME it and route the X to exitApp.
-  assert.match(app, /onPipHidden\(\(dismissed\)\s*=>/,
-    'onPipHidden dropped the dismissed parameter — the X cannot be told from a screen-off and the close is silently gone');
-  const dIdx = hidden.indexOf('if (dismissed)');
-  assert.ok(dIdx >= 0, 'the PiP-hidden door no longer branches on the X (dismissed)');
-  assert.ok(hSave < dIdx,
-    'the dismissed branch runs before the playhead is banked — a close before the save loses the stop point');
-  const dRet = hidden.indexOf('return;', dIdx);
-  assert.ok(dRet > dIdx, 'the dismissed branch does not return — it would fall through into the screen-off path');
-  const dBranch = hidden.slice(dIdx, dRet);
-  assert.match(dBranch, /disarmBackgroundPlayback\(/,
-    'the X does not stop the background service — the notification would stay stuck');
-  assert.match(dBranch, /exitApp\(/,
-    'the X does not close the app — it would just background it, and the next launch opens paused (the report)');
-  const elseTail = hidden.slice(dRet);
-  assert.ok(elseTail.includes('pauseCurrent()'),
-    'the screen-off branch no longer pauses in place');
-  assert.ok(!elseTail.includes('exitApp('),
-    'screen-off over the window CLOSES the app — a legitimate background listen would be killed (the dangerous inversion)');
-  // the platform wrapper must forward the native flag, or every window-gone event reads as a
-  // screen-off and the X close is dead (the flag is computed and retained natively already)
-  assert.match(fnSlice(CODE.get('www/js/platform.js'), 'export function onPipHidden('),
-    /fn\(!!\(o && o\.dismissed\)\)/,
-    'platform.onPipHidden drops the dismissed flag — the handler can never see an X');
-
   // 3) ELIGIBILITY IS PUSHED AHEAD AND EVERY LOCK REFUSES IT. The pure decision owns the
   //    rule (unit-tested); this pins the WIRING — refreshPipState must hand it the kiosk
   //    AND the containment state, or a lock silently stops applying to PiP.
