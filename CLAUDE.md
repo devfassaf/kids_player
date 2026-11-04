@@ -321,6 +321,57 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.1.1 — **ON APP RESUME, ANY LEFTOVER FLOATING WINDOW IS CLOSED — AND THE WAY ONE GOT
+  LEFT BEHIND IS SHUT AT ITS SOURCE** (field report, the user's own device: "כאשר אני סוגר
+  את האפליקציה על ידי שאני ממזער אותה, לאחר מכן לוחץ על X … נוצר לי ניגון בחלון קטן … ואז
+  יוצאת מיידי. לאחר מכן כאשר אני פותח את האפליקציה, נפתח לי גם האפליקציה וגם החלון הצף שמקודם
+  היה." His ask: "בעת העלייה של האפליקציה … בדיקה האם יש חלון צף של האפליקציה שפתוח, ובמידה
+  וכן יסגרו אותו").
+  - **THE ROOT CAUSE WAS A STALE PiP ELIGIBILITY, AND IT RECONCILES THE WHOLE REPORT.** The
+    watch view's `onLeave` minimise branch calls `enterMini()` and RETURNS before its own
+    `refreshPipState()` ([app.js](www/js/app.js), the `nav.register('watch')` onLeave), and
+    `enterMini()` never re-pushed it either — while `openWatch` had already pushed
+    `eligible:true`. So after BACK→mini the NATIVE `pipEligible` stayed **true**, even though
+    pure `pipEligibility` already answers `eligible:false` when `!watching`
+    ([playerlogic.js](www/js/playerlogic.js)). Consequence: pressing HOME **during a mini**
+    auto-entered **OS PiP** (the floating window the user saw), and that window's ✕ left a
+    leftover layer behind on reopen. `enterMini()` now ends in `refreshPipState()` — which only
+    ENFORCES the pure decision that already existed; the main watch→HOME→PiP path (watching=true)
+    is untouched, only mini→HOME changes (it just backgrounds now).
+  - **THE REQUESTED BELT: `onAppResume` CLOSES ANY LEFTOVER FLOATING WINDOW, FIRST AND
+    SYNCHRONOUSLY.** `onAppResume` otherwise touched NOTHING about the player, so an in-app mini
+    (`pw-mini`) and a stale OS-PiP visual state (`html.pip`/`inPipMode`) **survived a warm
+    resume** — that was the floating window reappearing on reopen. (Cold boot was already clean:
+    a fresh process has `miniActive=false` and no `html.pip`; the mini is in-memory DOM/flag
+    state and cannot survive a process death.) Pure `playerlogic.resumeFloatingCleanup` owns the
+    decision; the handler acts on it before the scheduled-lock check so the window is gone
+    instantly and nav-neutrally.
+  - ⚠️ **A LIVE WATCH SESSION IS PRESERVED — only a FLOATING leftover is closed.** The decision
+    takes `onWatch` (`nav.isActive('watch')`): a child who was watching, backgrounded, and came
+    back to a paused docked video keeps it (`mini:false`, `hidePlayer:false`). Without that
+    signal the cleanup would tear down a legitimate paused video on every resume — the one real
+    hazard, pinned by both the unit matrix and an invariants guard. The `hidePlayer` belt
+    (a docked layer stranded off-watch by a half-exit) is gated on `playerVisible` too, so a
+    normal resume-to-gallery with the player already hidden is a pure no-op (no `stop()` churn).
+  - **BUILT ON THE v1.1.0 ROLLBACK BASE** (v1.0.98's product). The PiP window's ✕ still PAUSES
+    IN PLACE (v1.0.98) — it does NOT close the app; re-attempting X-closes was the v1.0.99
+    regression and stays out. This release is purely the leftover-window cleanup + the root-cause
+    re-push. ⚠️ **WHY 1.1.1 AND NOT A 1.0.x**: after 1.0.99 the versionCode scheme (patch ≤ 99)
+    left no 1.0.x room, so v1.1.0 was the rollback and **1.1.1** is the next patch
+    (versionCode 10101 > 10100 > 10099). The user's v1.0.99 device updates straight to v1.1.1,
+    getting the rollback AND this fix in one release.
+  - 1 unit matrix (`resumeFloatingCleanup`: the floating leftover, the stuck PiP state, the
+    stranded docked layer, the clean no-op, the preserved live watch, totality) + 1 invariants
+    guard (both wiring halves: `onAppResume` routes through the pure decision and acts on each
+    branch BEFORE the lock check, carrying the `onWatch`/`playerVisible` signals; `enterMini`
+    re-pushes `refreshPipState`). **Every guard proven red on a planted regression (10 plants.)**
+    **Browser-verified end to end against the real app with a stubbed bridge (9 checks)**:
+    bootResume opened a docked, playing video; a resume LEFT the live watch session alone;
+    BACK floated the mini and pushed `eligible:false`; a stuck `html.pip` over the mini was
+    then CLOSED by a resume (player hidden, `html.pip` dropped); and a clean resume was a no-op.
+    **The real OS-PiP window on a device stays a TESTING.md checklist item** — no browser enters
+    OS PiP.
+
 - v1.1.0 — **ROLLBACK: v1.0.99 WAS A REGRESSION; v1.0.98'S PRODUCT SHIPPED FORWARD**
   (field report on v1.0.99: "עכשיו זה פחות טוב ממקודם" — the X still did not close the app,
   AND a new artifact appeared: after minimize→close→reopen, a small window with the previous

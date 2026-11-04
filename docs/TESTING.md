@@ -302,6 +302,16 @@ for anything destructive, and purge it afterwards.
       switch, and the parent PIN screen all close the floating window.
 - [ ] **YouTube** floats and keeps playing too (the activity stays foreground, so the WebView
       is not throttled).
+- [ ] **v1.1.1 — no leftover floating window on reopen**: float a video (BACK → mini), then
+      press HOME and reopen the app → the mini must be GONE (the app comes back to the plain
+      menu, nothing floating inside it). Repeat with the OS-PiP path: play → HOME (OS floating
+      window) → tap its ✕ → reopen → no leftover window, no video stripped to a small frame.
+      ⚠️ Counter-check that a LIVE watch is preserved: play a video (docked, on the watch
+      screen) → HOME → reopen → it is still the paused video on the watch screen, NOT torn down.
+- [ ] **v1.1.1 — HOME during a mini no longer opens an OS-PiP window**: float a video (BACK →
+      mini), then press HOME → the app just backgrounds (the video pauses); it must NOT shrink
+      into a separate OS floating window. (Pressing HOME while actually WATCHING still shrinks
+      to OS PiP — that path is unchanged.)
 
 ### Search inside a folder (v1.0.58 — the browser proved the scoping; these need a device)
 - [ ] **TV**: the 🔍 in the folder header is reachable with the D-pad, and typing works with

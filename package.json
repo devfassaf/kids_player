@@ -1,6 +1,6 @@
 {
   "name": "kids-player",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "description": "Child-safe curated YouTube + direct-video player for a 4-year-old (Android / Capacitor)",

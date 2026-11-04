@@ -34,7 +34,7 @@ import { planAutoplay, autoplayNextTarget, nextInOrder, previewEmbedUrl, preview
   resumeStartAt, resumeSaveDecision, watchedFraction, nowPlayingChannel,
   fullscreenOrientation, planCallResume, backgroundPlayDecision, mediaSessionActive, opensFullscreen,
   pipEligibility, pipSkipTarget, miniEligible, transportIntent, bootPlayNudge,
-  commandFresh } from './playerlogic.js';
+  commandFresh, resumeFloatingCleanup } from './playerlogic.js';
 import { groupSinglesByChannel, shouldFlattenHome, isLooseRecord,
   resolveWatchContext, attentionDot, parentLandingTab,
   pendingBulkAction, PARENT_TAB_IDS, channelAddOutcome, planEntryRefresh,
@@ -4233,6 +4233,13 @@ function enterMini() {
   }
   $('mini-controls')?.setAttribute('aria-hidden', 'false');
   refreshMiniPrevNext();
+  // v1.1.1 — re-push PiP eligibility now that the watch view is gone. The watch onLeave's
+  // minimise branch returns BEFORE its own refreshPipState(), and openWatch had pushed
+  // eligible:true — so without this the native pipEligible stayed TRUE for a mini, and HOME
+  // auto-entered OS PiP, producing the floating OS window whose ✕ left a leftover on reopen.
+  // This only ENFORCES the existing pure decision (pipEligibility is false when !watching);
+  // the main watch→HOME→PiP path is untouched. fire-and-forget, so enterMini stays sync.
+  refreshPipState().catch(() => {});
 }
 
 /** Expand the mini back to the full watch screen WITHOUT restarting playback (the player is
@@ -10225,6 +10232,24 @@ async function init() {
   window.addEventListener('pointercancel', swallowIdleGestureTail, true);
 
   onAppResume(async () => {
+    // v1.1.1 — FIRST, and synchronously: close any leftover floating window of the app (the
+    // user's request). `onAppResume` otherwise never touches the player, so an in-app mini
+    // (`pw-mini`) and a stale OS-PiP visual state (`html.pip`/`inPipMode`) SURVIVE a warm
+    // resume — that is the floating window that reappears on reopen. A legitimate watch
+    // session (`onWatch`) keeps its docked, paused player; only a FLOATING leftover is closed.
+    // Pure resumeFloatingCleanup owns the decision; this runs before tickScheduledLock so the
+    // window is gone instantly, and it is nav-neutral so the lock check below is unaffected.
+    try {
+      const cu = resumeFloatingCleanup({
+        miniActive, inPipMode,
+        pipClass: document.documentElement.classList.contains('pip'),
+        onWatch: nav.isActive('watch'),
+        playerVisible: !$('player-wrap')?.classList.contains('pw-hidden'),
+      });
+      if (cu.mini) teardownMini();
+      if (cu.clearPip) { inPipMode = false; document.documentElement.classList.remove('pip'); }
+      if (cu.hidePlayer) { try { stop(); } catch {} hidePlayer(); }
+    } catch {}
     // v1.0.31: a scheduled lock may have matured while backgrounded — check before anything.
     await tickScheduledLock().catch(() => {});
     // v1.0.57 — the call is over and the child is back: carry on with the video. AFTER the
