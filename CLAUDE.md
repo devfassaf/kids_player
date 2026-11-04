@@ -321,71 +321,49 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
-- v1.0.99 — **THE PiP WINDOW'S X DOES NOT CLOSE THE APP AT ALL — IT BACKGROUNDS IT** (field
-  report on v1.0.98, same day: "אותה בעיה בדיוק", with the instruction "תנסה לדבג את הבאג
-  אצלך"). Debugged in the browser against the real app, and the finding reverses v1.0.98's
-  diagnosis (corrected in place below).
-  - **THERE IS NO ZOMBIE, AND THAT IS WHY v1.0.97 AND v1.0.98 BOTH CHANGED NOTHING.** On the
-    reporting device the PiP window's X **neither removes the task** (so v1.0.97's
-    `onTaskRemoved` never fires) **nor finishes the activity** (so v1.0.98's `onDestroy` never
-    fires): it exits PiP and BACKGROUNDS the app, with the video paused in place and the media
-    service left running. Reproduced end to end in the browser (the native event order
-    `pipChanged(true)` → `pipChanged(false)` → `pipHidden{dismissed:true}`): the app sits on
-    the watch screen in the background, nothing closes, the service stays up — **so the "stuck
-    notification" is a live, legitimate PAUSED session, not a dead one.** Reopening is a warm
-    resume, and the v1.0.32 contract deliberately never auto-plays a return-from-background
-    (the pocket-at-night rule) — no boot, no bootResume, no nudge. "נפתח אך לא מתנגן", every
-    time, and all "working as designed" — the design of X was just not what the user asked.
-  - **THE ANSWER WAS ALREADY IN THE CODE, UNUSED.** v1.0.76 built the X-vs-screen-off
-    distinction natively (`KidsNativePlugin.onPipActivityStopped` → `dismissed`), retained the
-    event, and `platform.onPipHidden` passed the flag through — **and the JS handler took no
-    parameter and ignored it** (`onPipHidden(() => …)`). The save half already worked (the
-    repro banked the playhead), which proved the handler runs on the X; it just had one missing
-    decision.
-  - **THE FIX IS ONE BRANCH IN `app.js`'s `onPipHidden`, NO JAVA CHANGE** (the user's spec: X
-    closes the app, the bar vanishes, the next launch plays). The handler now takes `dismissed`,
-    saves the playhead FIRST in both cases, and on the X calls `disarmBackgroundPlayback()`
-    (the notification drops before the process dies) then `exitApp()` — the ordinary exit the
-    user already confirmed works: `finishAndRemoveTask` + a 250ms-delayed `System.exit`, so the
-    next launch is a real cold boot that bootResume + the v1.0.96 nudge PLAY. The save is
-    fire-and-forget behind three belts (exitApp's 250ms delay, the 5s periodic save, bootResume's
-    3s rewind), so the banked spot survives.
-  - **THE SCREEN-OFF BRANCH (`!dismissed`) IS BYTE-UNCHANGED**: a screen that turns off OVER a
-    still-floating window keeps pausing in place and keeps a legitimate bgPlay audio listen
-    sounding (`backgroundPlayDecision`). ⚠️ The dangerous inversion — closing the app on
-    screen-off — would silence that listen, so the guard pins that `exitApp` lives ONLY in the
-    dismissed branch.
-  - ⚠️ **CONSEQUENCE, by the user's spec**: pressing X during a background audio listen now
-    CLOSES the app (X is a close). The bgPlay door stays screen-off/HOME. PiP never arms under
-    a kiosk/containment lock (`pipEligibility` refuses), so this exit is never a way out of a
-    lock, and `exitApp` already flags `noteLegitLeave()` (the TV watchdog).
-  - **v1.0.97 AND v1.0.98 STAY** — each is a correct teardown for the door it names (a real
-    swipe-kill; a real finishing destroy). They simply never fire on this X.
-  - **PURE JS — BROWSER-REPRODUCIBLE THIS TIME.** 1 invariants guard extended (the v1.0.76
-    `onPipHidden` pin): the handler consumes `dismissed`, saves before the branch, the dismissed
-    branch disarms + `exitApp`, the screen-off branch still pauses and NEVER exits, and
-    `platform.onPipHidden` forwards the flag. **Every assertion proven red on a planted
-    regression (5 plants: drop the param, exit before save, drop the exit, exit on both
-    branches, platform drops the flag).** **Browser-verified end to end against the real app
-    with a stubbed bridge (11 checks)**: the bug reproduced pre-fix (X → paused, no exit,
-    service alive — the report exactly); then the X banking the playhead, stopping the service
-    before the exit, calling exitApp once; the NEXT launch boot-resuming the same video PLAYING
-    at the X spot minus the 3s rewind; and screen-off-over-the-window still pausing in place
-    with no exit. **The real X is still a DEVICE item** (TESTING.md): X → the notification
-    VANISHES → relaunch plays, ×3; and the bgPlay screen-off regression check.
+- v1.1.0 — **ROLLBACK: v1.0.99 WAS A REGRESSION; v1.0.98'S PRODUCT SHIPPED FORWARD**
+  (field report on v1.0.99: "עכשיו זה פחות טוב ממקודם" — the X still did not close the app,
+  AND a new artifact appeared: after minimize→close→reopen, a small window with the previous
+  screen floated INSIDE the app. User decision 2026-11-04: go back to v1.0.98, which was the
+  better product, and make it official).
+  - ⚠️ **WHY 1.1.0 AND NOT 1.0.100**: the Android `versionCode` is `major*10000 + minor*100
+    + patch`, so **patch must stay ≤ 99** (the invariants test pins it) — 1.0.100 would both
+    break the gradle parser and collide with 1.1.0's code (10100). 1.0.99 was the last 1.0.x
+    patch slot, so the only valid version above it is the minor roll-over **1.1.0**. It is a
+    rollback wearing a minor bump purely because the scheme left no 1.0.x room; `parseVersion`
+    still sees 1.1.0 > 1.0.99, so every v1.0.99 device is offered it as an ordinary update.
+  - **WHAT HAPPENED**: v1.0.99's JS change (`onPipHidden`'s `dismissed` branch → `exitApp`)
+    did not fix the PiP-X close on the reporting device and introduced a leftover
+    mini/docked player layer on warm reopen (v1.0.76/77 `#player-wrap`), most likely because
+    `exitApp`'s `finishAndRemoveTask` only backgrounds the app on that OEM — a half-exit that
+    leaves the top-level player layer mounted. Net worse than v1.0.98.
+  - **THE ROLLBACK IS A FORWARD REVERT, NOT A DOWNGRADE** — the updater only moves forward
+    and the user's device is already on v1.0.99, so v1.0.98's EXACT code is shipped as the
+    higher version **v1.1.0**: `git revert -m 1` of the v1.0.99 merge restored the whole
+    v1.0.98 tree (`git diff <v1.0.98> HEAD -- www android test` is EMPTY — product identical
+    byte-for-byte), then package.json → 1.1.0. Every v1.0.99 device (the user's included)
+    gets v1.1.0 through the normal update and returns to the good product; no manual
+    reinstall. v1.0.99's work stays in git history (a revert, not a reset) for a future
+    attempt.
+  - ⚠️ **THE v1.0.98 ENTRY BELOW CARRIES THE WRONG DIAGNOSIS AGAIN.** v1.0.99 had corrected
+    it in place ("X does NOT finish the activity — it backgrounds the app"); that correction
+    was reverted with everything else, so the v1.0.98 text below once more claims the X
+    "FINISHES the activity." On the reporting device it does NOT (no `onDestroy`, no
+    `onTaskRemoved` — it backgrounds). v1.0.98's `MainActivity.onDestroy` + `onTaskRemoved`
+    stay as correct belts for a REAL finishing destroy / swipe-kill; they simply do not fire
+    on this X. **The PiP-X close is an OPEN field bug** — tackle it fresh from this stable
+    base, and the real signal is already wired: `onPipActivityStopped`'s `dismissed` flag
+    reaches JS (`platform.onPipHidden`), and the reliable close is probably native
+    (`moveTaskToBack(true)` / an explicit process teardown in the plugin), not JS `exitApp`.
+  - **No product code changed** (the whole point). npm test green at v1.0.98's suite; no
+    browser/APK step — this is a previously shipped, verified build. Release is the user's
+    local `release.sh` as always.
 
-- v1.0.98 — **THE PiP WINDOW'S X — A FINISHING-DESTROY TEARDOWN (the diagnosis was WRONG; see
-  v1.0.99)** (field report on v1.0.97, same day: clean exit now fully heals, "אך כאשר אני ממזער את
+- v1.0.98 — **THE PiP WINDOW'S X KILLS THE PLAYBACK SERVICE TOO — THE ZOMBIE'S THIRD DOOR**
+  (field report on v1.0.97, same day: clean exit now fully heals, "אך כאשר אני ממזער את
   האפליקציה למסך קטן בצד… ואז סוגר… על ידי לחיצה על כפתור ה-X… עדיין מופיע לי בבר למעלה
   איקון… הסרטון רק נפתח ולא מתנגן" — and the explicit spec: X בחלון הממוזער = האפליקציה
   נסגרת, הבר נעלם, והכניסה הבאה מנגנת מידי).
-  - ⚠️ **CORRECTION (v1.0.99): THE DIAGNOSIS BELOW DID NOT HOLD ON THE REPORTING DEVICE.** The
-    X does NOT finish the activity there — it backgrounds the app (no `onDestroy`, no
-    `onTaskRemoved`), so this fix never ran and the report recurred. The real fix is the JS
-    `dismissed` branch in v1.0.99 above. This change STAYS: a finishing destroy (clean exit's
-    `finishAndRemoveTask`, an OEM freeform close) IS a correct place to stop the service, and
-    v1.0.99's exit now routes through it as a belt. The paragraphs below describe that
-    (narrower) role, not the field bug they were written for.
   - **THE DIAGNOSIS IS IN THE STUCK NOTIFICATION, AGAIN**: the OS PiP window's X (the
     SYSTEM's own affordance, v1.0.76) **FINISHES the activity WITHOUT removing the task**,
     so `onTaskRemoved` — the v1.0.97 fix — never fires, and the identical zombie survives

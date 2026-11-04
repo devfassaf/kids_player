@@ -10143,29 +10143,13 @@ async function init() {
     }
     refreshPipState().catch(() => {});
   });
-  // The window went away. The native side (v1.0.76) tells the two cases apart and passes
-  // the flag here: `dismissed` = the X was tapped; `!dismissed` = the screen turned off
-  // OVER a still-floating window. Save FIRST in BOTH — the playhead is live either way.
-  // ⚠️ v1.0.99 — THE X IS A CLOSE, NOT A PAUSE. Measured on the reporting device: tapping
-  // the PiP window's X neither removes the task (so v1.0.97's onTaskRemoved never fires)
-  // nor finishes the activity (so v1.0.98's onDestroy never fires) — it simply BACKGROUNDS
-  // the app with the video paused in place and the media service left running. So the
-  // "stuck notification" is a live paused session, and reopening is a warm resume, which
-  // v1.0.32 deliberately never auto-plays — "נפתח אך לא מתנגן", every time. The user's
-  // spec is that the X closes the app: route it to the ordinary exit (the path they
-  // confirmed works — the notification drops and the next launch is a real boot that
-  // bootResume + the nudge play). disarm the service first so the notification is gone
-  // before the process dies; exitApp's own finishAndRemoveTask is then a v1.0.98 finishing
-  // destroy (belt), and the 250ms-delayed System.exit the final backstop.
-  // The !dismissed branch is UNCHANGED (byte for byte): screen-off over the window must
-  // keep a legitimate bgPlay listen sounding, exactly as before.
-  onPipHidden((dismissed) => {
+  // The window went away — dismissed with its X, or the screen turned off over it. No
+  // appStateChange fires here (the activity already paused when PiP began), so this door
+  // repeats the v1.0.32 contract: save FIRST (the live playhead), then pause IN PLACE —
+  // unless background playback legitimately keeps an audio file sounding.
+  onPipHidden(() => {
     const st = playbackState();
     saveWatchPosition(currentWatch, st);
-    if (dismissed) {
-      disarmBackgroundPlayback().catch(() => {}).then(() => { try { exitApp(); } catch {} });
-      return;
-    }
     const bg = backgroundPlayDecision({ enabled: bgPlayEnabled && bgPlayLive, playing: !!(st && st.playing), item: currentWatch });
     if (!bg.play) pauseCurrent();
     if (st && st.playing) checkCallResume().catch(() => {});
