@@ -321,6 +321,44 @@ Version single source of truth = `package.json "version"` (gradle + JS derive fr
 > back, so ONE release carries both: 1.0.92 → **1.0.94**. The rule stands: cut the HIGHEST
 > label in the tree, so no comment in the source names a version that has not shipped.
 
+- v1.1.0 — **ROLLBACK: v1.0.99 WAS A REGRESSION; v1.0.98'S PRODUCT SHIPPED FORWARD**
+  (field report on v1.0.99: "עכשיו זה פחות טוב ממקודם" — the X still did not close the app,
+  AND a new artifact appeared: after minimize→close→reopen, a small window with the previous
+  screen floated INSIDE the app. User decision 2026-11-04: go back to v1.0.98, which was the
+  better product, and make it official).
+  - ⚠️ **WHY 1.1.0 AND NOT 1.0.100**: the Android `versionCode` is `major*10000 + minor*100
+    + patch`, so **patch must stay ≤ 99** (the invariants test pins it) — 1.0.100 would both
+    break the gradle parser and collide with 1.1.0's code (10100). 1.0.99 was the last 1.0.x
+    patch slot, so the only valid version above it is the minor roll-over **1.1.0**. It is a
+    rollback wearing a minor bump purely because the scheme left no 1.0.x room; `parseVersion`
+    still sees 1.1.0 > 1.0.99, so every v1.0.99 device is offered it as an ordinary update.
+  - **WHAT HAPPENED**: v1.0.99's JS change (`onPipHidden`'s `dismissed` branch → `exitApp`)
+    did not fix the PiP-X close on the reporting device and introduced a leftover
+    mini/docked player layer on warm reopen (v1.0.76/77 `#player-wrap`), most likely because
+    `exitApp`'s `finishAndRemoveTask` only backgrounds the app on that OEM — a half-exit that
+    leaves the top-level player layer mounted. Net worse than v1.0.98.
+  - **THE ROLLBACK IS A FORWARD REVERT, NOT A DOWNGRADE** — the updater only moves forward
+    and the user's device is already on v1.0.99, so v1.0.98's EXACT code is shipped as the
+    higher version **v1.1.0**: `git revert -m 1` of the v1.0.99 merge restored the whole
+    v1.0.98 tree (`git diff <v1.0.98> HEAD -- www android test` is EMPTY — product identical
+    byte-for-byte), then package.json → 1.1.0. Every v1.0.99 device (the user's included)
+    gets v1.1.0 through the normal update and returns to the good product; no manual
+    reinstall. v1.0.99's work stays in git history (a revert, not a reset) for a future
+    attempt.
+  - ⚠️ **THE v1.0.98 ENTRY BELOW CARRIES THE WRONG DIAGNOSIS AGAIN.** v1.0.99 had corrected
+    it in place ("X does NOT finish the activity — it backgrounds the app"); that correction
+    was reverted with everything else, so the v1.0.98 text below once more claims the X
+    "FINISHES the activity." On the reporting device it does NOT (no `onDestroy`, no
+    `onTaskRemoved` — it backgrounds). v1.0.98's `MainActivity.onDestroy` + `onTaskRemoved`
+    stay as correct belts for a REAL finishing destroy / swipe-kill; they simply do not fire
+    on this X. **The PiP-X close is an OPEN field bug** — tackle it fresh from this stable
+    base, and the real signal is already wired: `onPipActivityStopped`'s `dismissed` flag
+    reaches JS (`platform.onPipHidden`), and the reliable close is probably native
+    (`moveTaskToBack(true)` / an explicit process teardown in the plugin), not JS `exitApp`.
+  - **No product code changed** (the whole point). npm test green at v1.0.98's suite; no
+    browser/APK step — this is a previously shipped, verified build. Release is the user's
+    local `release.sh` as always.
+
 - v1.0.98 — **THE PiP WINDOW'S X KILLS THE PLAYBACK SERVICE TOO — THE ZOMBIE'S THIRD DOOR**
   (field report on v1.0.97, same day: clean exit now fully heals, "אך כאשר אני ממזער את
   האפליקציה למסך קטן בצד… ואז סוגר… על ידי לחיצה על כפתור ה-X… עדיין מופיע לי בבר למעלה
