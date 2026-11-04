@@ -216,7 +216,7 @@ for anything destructive, and purge it afterwards.
       on a small playlist the button simply disappears at the end (no error).
 
 ### Playback
-- [ ] **Boot resume** (v1.0.95; play nudge v1.0.96; zombie service v1.0.97/98): enable
+- [ ] **Boot resume** (v1.0.95; play nudge v1.0.96; zombie service v1.0.97/98; PiP-X close v1.0.99): enable
       "המשך ניגון בעת כניסה", stop a video mid-way, force-close the app, reopen → after the
       profile loads, THAT video resumes from ~3s before the stop point, **in the ordinary
       (windowed) player with real SOUND and no touch** — the cold start has no user
@@ -234,14 +234,20 @@ for anything destructive, and purge it afterwards.
       clean-exit path still resumes, and with bgPlay on, ⏭ on the notification pressed
       while the screen is OFF still changes track once the screen returns (the retained
       same-life delivery the freshness gate must NOT break).
-      ⚠️ **THE PiP-X PATH (v1.0.98, the field repro — the zombie's third door)**: with the
-      PiP setting on, play a song → HOME shrinks it into the floating window → tap the
-      window's **X** → **the media notification must VANISH immediately** (stuck = the
-      finishing-destroy stop regressed) → relaunch → the video opens AND PLAYS. ×3.
-      Then the bgPlay regression the `isFinishing()` gate protects: PiP OFF, bgPlay ON,
-      play a song → HOME → **the music KEEPS PLAYING and the notification stays live**
-      (HOME is a stop without a finish — if the music dies here, the gate is gone), and
-      returning to the app finds it still playing.
+      ⚠️ **THE PiP-X PATH (v1.0.99, the real fix — X is a close, JS `dismissed` branch)**:
+      with the PiP setting on, play a song → HOME shrinks it into the floating window → tap
+      the window's **X** → **the app closes, the media notification VANISHES immediately**
+      (stuck = the `onPipHidden` dismissed branch regressed) → relaunch → the video opens AND
+      PLAYS from where it stopped (a real cold boot → bootResume + the nudge). ×3 — it was
+      the field recurrence. (v1.0.98's finishing-destroy `stopService` is only a belt here;
+      on the reporting device the X does not finish the activity, which is why the JS branch
+      is the actual fix.)
+      ⚠️ **THE SCREEN-OFF-OVER-THE-WINDOW REGRESSION the `!dismissed` branch protects**: PiP
+      ON, bgPlay ON, play a song → HOME into the floating window → **turn the screen off over
+      it** → the music must KEEP PLAYING (dismissed=false → pause-in-place/bgPlay, NOT a
+      close). If the app closes here, the dangerous inversion is back.
+      Then the plain bgPlay path (no PiP): PiP OFF, bgPlay ON, play a song → HOME → **the
+      music KEEPS PLAYING and the notification stays live**, and returning finds it playing.
 - [ ] **Continuous play** (v1.0.25): enable it for one child, let a video end → the countdown
       overlay appears and the next video starts without leaving the player. ✋ returns to the
       folder. With it OFF, a video ending returns to the folder as before.
