@@ -5558,6 +5558,51 @@ test('the in-app mini-player is a top-level layer, lock-gated, and torn down on 
     'the idle timer parks the floating mini video nobody can answer');
 });
 
+test('resume closes a leftover floating window, and entering the mini re-pushes PiP state (v1.1.1)', () => {
+  const app = CODE.get('www/js/app.js');
+
+  // THE ROOT CAUSE: entering the in-app mini must re-push PiP eligibility. The watch onLeave's
+  // minimise branch returns BEFORE its own refreshPipState and openWatch had pushed eligible:true,
+  // so without this the native pipEligible stayed TRUE for a mini and HOME auto-entered OS PiP —
+  // the floating OS window whose ✕ left a leftover on reopen. (Only enforces the pure decision:
+  // pipEligibility is already false when !watching.) Anchored to enterMini so a stray
+  // refreshPipState elsewhere cannot satisfy it.
+  assert.match(fnSlice(app, 'function enterMini('), /refreshPipState\(/,
+    'enterMini no longer re-pushes PiP state — HOME during a mini auto-enters OS PiP again');
+
+  // THE REQUEST: onAppResume closes any leftover floating window. The pure resumeFloatingCleanup
+  // owns the decision (unit-tested); this pins the WIRING — the handler must route through it and
+  // act on each branch. Brace-balanced body, NOT a char window (the v1.0.76 onPipHidden lesson).
+  const resume = handlerBody(app, 'onAppResume(async () => {');
+  assert.ok(resume, 'the onAppResume handler is gone');
+  assert.match(resume, /resumeFloatingCleanup\(/,
+    'resume no longer routes through the pure floating-cleanup decision');
+
+  // it runs FIRST, before the scheduled-lock check, so the stale window is gone instantly and
+  // a stale player cannot linger across the awaited lock check.
+  assert.ok(resume.indexOf('resumeFloatingCleanup') < resume.indexOf('tickScheduledLock'),
+    'the floating-cleanup must run before the scheduled-lock check — the window would flash on resume');
+
+  // each branch acts: close the mini, clear BOTH halves of the OS-PiP visual state, hide a
+  // stranded docked layer. Each is a different leftover; dropping any one leaves that window up.
+  assert.match(resume, /if \(cu\.mini\) teardownMini\(\)/,
+    'the mini branch no longer tears down the floating in-app player');
+  assert.match(resume, /document\.documentElement\.classList\.remove\('pip'\)/,
+    'the clear-PiP branch no longer drops the html.pip class — the app stays stripped to the video');
+  assert.match(resume, /inPipMode = false/,
+    'the clear-PiP branch no longer resets inPipMode — onAppPause would keep ignoring backgrounding');
+  assert.match(resume, /if \(cu\.hidePlayer\)[\s\S]{0,60}hidePlayer\(\)/,
+    'the hide branch no longer hides a docked layer stranded off the watch view');
+
+  // ⚠️ THE WATCH-PRESERVATION SIGNAL MUST REACH THE DECISION. Without onWatch, a legitimate
+  // paused watch session (backgrounded then resumed) would be torn down as a "leftover".
+  assert.match(resume, /onWatch: nav\.isActive\('watch'\)/,
+    'the decision no longer learns it is a live watch — a paused video would be torn down on resume');
+  // and the player-visibility signal that gates the hide branch (so a clean resume is a no-op)
+  assert.match(resume, /playerVisible: !\$\('player-wrap'\)\?\.classList\.contains\('pw-hidden'\)/,
+    'the decision no longer learns whether the player is visible — a clean resume would churn stop()/hidePlayer');
+});
+
 test('recent searches: recorded at USE moments only, painted over an empty input, device-local (v1.0.87)', () => {
   const app = CODE.get('www/js/app.js');
 

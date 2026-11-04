@@ -752,6 +752,53 @@ test('miniEligible: BACK floats only with the setting on, no lock, no kiosk, and
   assert.equal(miniEligible(), false);
 });
 
+test('resumeFloatingCleanup: on resume, close a leftover floating window — but keep a live watch (v1.1.1)', async () => {
+  const { resumeFloatingCleanup } = await import('../www/js/playerlogic.js');
+
+  // THE REPORTED LEFTOVER: an in-app mini survived a warm resume. Close it (teardownMini).
+  // hidePlayer is OWNED by the mini branch here, so it must NOT also fire.
+  assert.deepEqual(
+    resumeFloatingCleanup({ miniActive: true, playerVisible: true, onWatch: false }),
+    { mini: true, clearPip: false, hidePlayer: false });
+
+  // mini + a stuck OS-PiP visual state (HOME-during-mini had armed PiP and left html.pip)
+  assert.deepEqual(
+    resumeFloatingCleanup({ miniActive: true, inPipMode: true, pipClass: true, playerVisible: true, onWatch: false }),
+    { mini: true, clearPip: true, hidePlayer: false });
+
+  // a stuck OS-PiP visual state with NO mini, player still shown off-watch → clear + hide
+  assert.deepEqual(
+    resumeFloatingCleanup({ inPipMode: true, pipClass: true, playerVisible: true, onWatch: false }),
+    { mini: false, clearPip: true, hidePlayer: true });
+
+  // a docked layer stranded off the watch view by a half-exit → hide it
+  assert.deepEqual(
+    resumeFloatingCleanup({ playerVisible: true, onWatch: false }),
+    { mini: false, clearPip: false, hidePlayer: true });
+
+  // ⚠️ A LEGITIMATE WATCH SESSION IS PRESERVED: the child was watching, backgrounded, and came
+  // back to a paused video. onWatch keeps its docked player — nothing is torn down or hidden.
+  assert.deepEqual(
+    resumeFloatingCleanup({ onWatch: true, playerVisible: true }),
+    { mini: false, clearPip: false, hidePlayer: false });
+  // …but a stray html.pip on the watch screen (which would strip the app to the video) is still cleared
+  assert.deepEqual(
+    resumeFloatingCleanup({ onWatch: true, playerVisible: true, pipClass: true }),
+    { mini: false, clearPip: true, hidePlayer: false });
+
+  // A CLEAN RESUME TO THE GALLERY (no video, player hidden) is a pure no-op — no stop(), no DOM churn.
+  assert.deepEqual(
+    resumeFloatingCleanup({ playerVisible: false, onWatch: false }),
+    { mini: false, clearPip: false, hidePlayer: false });
+
+  // nothing to hide when the player is already hidden, even off-watch
+  assert.equal(resumeFloatingCleanup({ playerVisible: false, onWatch: false }).hidePlayer, false);
+
+  // TOTALITY: no args, empty object — all false, never a thrown resume handler.
+  assert.deepEqual(resumeFloatingCleanup(), { mini: false, clearPip: false, hidePlayer: false });
+  assert.deepEqual(resumeFloatingCleanup({}), { mini: false, clearPip: false, hidePlayer: false });
+});
+
 /* ---------------- transport verbs (v1.0.88) ---------------- */
 import { transportIntent } from '../www/js/playerlogic.js';
 

@@ -319,6 +319,40 @@ export function miniEligible({
   return !!playing;
 }
 
+/**
+ * v1.1.1 — PURE: on app RESUME (and cold boot as a belt), what leftover floating-player
+ * state must be closed? The user's request: "בעת עליית האפליקציה … האם יש חלון צף של
+ * האפליקציה שפתוח, ובמידה וכן יסגרו אותו" — on startup, if a floating window of the app is
+ * open, close it.
+ *
+ * The leftover is real: `onAppResume` touches nothing about the player, so the in-app mini
+ * (`pw-mini`) and a stale OS-PiP visual state (`html.pip`/`inPipMode`) SURVIVE a warm resume.
+ * After BACK→mini → HOME, the activity can auto-enter OS PiP (the native `pipEligible` stayed
+ * true — the root cause is that entering the mini never re-pushed it), and its ✕ then leaves a
+ * floating layer behind on reopen.
+ *
+ * A LEGITIMATE watch session is preserved: `onWatch` keeps its docked, paused player — only a
+ * FLOATING leftover is closed. The in-app mini is ephemeral by design (it cannot survive a
+ * process death either), so closing it on return is faithful to the request and ends the
+ * confusion at a clean reset point.
+ *
+ * - `mini`       → a floating in-app mini is up: tear it down (full stop+hide+clear).
+ * - `clearPip`   → a stuck OS-PiP visual state: drop `html.pip` + `inPipMode`.
+ * - `hidePlayer` → a docked layer stranded off the watch view by a half-exit: stop + hide.
+ *                  (Only when the player is actually visible AND we are neither on the watch
+ *                  view nor in the mini — so a normal resume-to-gallery with a hidden player
+ *                  is a pure no-op, and the mini / watch cases are owned by the two above.)
+ */
+export function resumeFloatingCleanup({ miniActive = false, inPipMode = false,
+                                        pipClass = false, onWatch = false,
+                                        playerVisible = false } = {}) {
+  return {
+    mini: !!miniActive,
+    clearPip: !!(inPipMode || pipClass),
+    hidePlayer: !!playerVisible && !onWatch && !miniActive,
+  };
+}
+
 export function pipSkipTarget({ keys = [], currentKey = null, dir = 1, isGift = () => false } = {}) {
   const list = Array.isArray(keys) ? keys : [];
   const i = list.indexOf(currentKey);
